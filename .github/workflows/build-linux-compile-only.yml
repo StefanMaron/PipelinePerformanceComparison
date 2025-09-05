@@ -164,13 +164,8 @@ jobs:
         echo "Compiling AL extension..."
         COMPILE_START=$(date +%s.%N)
         
-        # Create bin directory with full permissions
-        mkdir -p bin
-        chmod 777 bin
-        
-        # Use AL command directly with absolute path
-        BIN_PATH="$(pwd)/bin"
-        if AL compile /project:"." /packagecachepath:".alpackages" /out:"$BIN_PATH"; then
+        # Try compilation without specifying output directory (AL should create default output)
+        if AL compile /project:"." /packagecachepath:".alpackages"; then
             COMPILE_END=$(date +%s.%N)
             COMPILE_DURATION=$(echo "$COMPILE_END - $COMPILE_START" | bc -l)
             echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV
