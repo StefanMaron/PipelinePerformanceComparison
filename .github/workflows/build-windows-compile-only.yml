@@ -102,35 +102,22 @@ jobs:
         $bcFeed = "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json"
         
         try {
-            # Download packages directly from the Microsoft feed
-            New-Item -ItemType Directory -Path temp_packages -Force | Out-Null
+            # Download NuGet.exe for better Azure DevOps feed support
+            Write-Host "Downloading NuGet.exe..."
+            Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" -OutFile "nuget.exe" -UseBasicParsing
             
-            # Download System Application symbols
-            Write-Host "Downloading Microsoft.Application.System..."
-            $systemUrl = $bcFeed -replace "/nuget/v3/index.json", "/nuget/v3/flatcontainer/microsoft.application.system/22.0.0/microsoft.application.system.22.0.0.nupkg"
-            Invoke-WebRequest -Uri $systemUrl -OutFile "temp_packages\microsoft.application.system.22.0.0.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+            # Use NuGet.exe with the Microsoft feed
+            # Using the correct package names and latest version from the feed
+            $bcVersion = "26.4.37194.38224"
             
-            # Download Base Application symbols  
-            Write-Host "Downloading Microsoft.Application.Base..."
-            $baseUrl = $bcFeed -replace "/nuget/v3/index.json", "/nuget/v3/flatcontainer/microsoft.application.base/22.0.0/microsoft.application.base.22.0.0.nupkg"
-            Invoke-WebRequest -Uri $baseUrl -OutFile "temp_packages\microsoft.application.base.22.0.0.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+            Write-Host "Downloading Microsoft.SystemApplication.US.symbols..."
+            & .\nuget.exe install "Microsoft.SystemApplication.US.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f" -Version $bcVersion -Source $bcFeed -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
             
-            # Download Application symbols
-            Write-Host "Downloading Microsoft.Application..."
-            $appUrl = $bcFeed -replace "/nuget/v3/index.json", "/nuget/v3/flatcontainer/microsoft.application/22.0.0/microsoft.application.22.0.0.nupkg"
-            Invoke-WebRequest -Uri $appUrl -OutFile "temp_packages\microsoft.application.22.0.0.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+            Write-Host "Downloading Microsoft.BaseApplication.US.symbols..."
+            & .\nuget.exe install "Microsoft.BaseApplication.US.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972" -Version $bcVersion -Source $bcFeed -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
             
-            # Extract .nupkg files and find .app files
-            Get-ChildItem -Path temp_packages -Filter "*.nupkg" | ForEach-Object {
-                Write-Host "Extracting $($_.Name)..."
-                $extractPath = "temp_packages\extracted\$($_.BaseName)"
-                New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
-                try {
-                    Expand-Archive -Path $_.FullName -DestinationPath $extractPath -Force
-                } catch {
-                    Write-Host "Failed to extract $($_.Name): $($_.Exception.Message)"
-                }
-            }
+            Write-Host "Downloading Microsoft.Application.US.symbols..."
+            & .\nuget.exe install "Microsoft.Application.US.symbols" -Version $bcVersion -Source $bcFeed -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
             
             # Extract .app files from downloaded packages
             Get-ChildItem -Path temp_packages -Filter "*.app" -Recurse | ForEach-Object {
