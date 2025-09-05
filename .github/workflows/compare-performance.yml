@@ -1,0 +1,232 @@
+name: Performance Comparison
+
+on:
+  workflow_run:
+    workflows: ["Build and Test (Windows)", "Build Linux (Compile Only)", "Build Windows (Compile Only)"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  compare-performance:
+    runs-on: ubuntu-latest
+    name: Compare Build Performance
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Download Windows BC Container artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: windows-bc-container-artifacts
+        path: ./windows-bc-container-artifacts/
+      continue-on-error: true
+      
+    - name: Download Windows Compile-Only artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: windows-compile-only-artifacts
+        path: ./windows-compile-only-artifacts/
+      continue-on-error: true
+      
+    - name: Download Linux Compile-Only artifacts  
+      uses: actions/download-artifact@v4
+      with:
+        name: linux-compile-only-artifacts
+        path: ./linux-compile-only-artifacts/
+      continue-on-error: true
+      
+    - name: Setup Node.js for comparison script
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        
+    - name: Create performance comparison script
+      run: |
+        cat > compare.js << 'EOF'
+        const fs = require('fs');
+        
+        function loadMetrics(platform) {
+            try {
+                const filePath = `./${platform}-artifacts/${platform}-build-metrics.json`;
+                if (fs.existsSync(filePath)) {
+                    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                }
+            } catch (error) {
+                console.error(`Error loading ${platform} metrics:`, error.message);
+            }
+            return null;
+        }
+        
+        function formatDuration(seconds) {
+            if (seconds < 60) {
+                return `${seconds.toFixed(2)}s`;
+            }
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            return `${minutes}m ${remainingSeconds.toFixed(2)}s`;
+        }
+        
+        function calculateImprovement(windowsTime, linuxTime) {
+            if (!windowsTime || !linuxTime) return 'N/A';
+            const improvement = ((windowsTime - linuxTime) / windowsTime) * 100;
+            const sign = improvement > 0 ? '+' : '';
+            return `${sign}${improvement.toFixed(1)}%`;
+        }
+        
+        const windowsMetrics = loadMetrics('windows');
+        const linuxMetrics = loadMetrics('linux');
+        
+        console.log('# 🚀 Build Performance Comparison Report\n');
+        
+        if (!windowsMetrics && !linuxMetrics) {
+            console.log('⚠️ No build metrics available for comparison.');
+            process.exit(0);
+        }
+        
+        if (!windowsMetrics) {
+            console.log('⚠️ Windows build metrics not available.');
+        }
+        
+        if (!linuxMetrics) {
+            console.log('⚠️ Linux build metrics not available.');
+        }
+        
+        if (windowsMetrics && linuxMetrics) {
+            console.log('## 📊 Performance Summary\n');
+            console.log('| Stage | Windows (w/ BC Container) | Linux | Improvement |');
+            console.log('|-------|---------------------------|-------|-------------|');
+            console.log(`| AL/Tools Installation | ${formatDuration(windowsMetrics.al_install_duration)} | ${formatDuration(linuxMetrics.al_install_duration)} | ${calculateImprovement(windowsMetrics.al_install_duration, linuxMetrics.al_install_duration)} |`);
+            
+            // Handle different metric structures
+            if (windowsMetrics.container_creation_duration && linuxMetrics.dependency_download_duration) {
+                console.log(`| Setup (Container vs Dependencies) | ${formatDuration(windowsMetrics.container_creation_duration)} | ${formatDuration(linuxMetrics.dependency_download_duration)} | ${calculateImprovement(windowsMetrics.container_creation_duration, linuxMetrics.dependency_download_duration)} |`);
+            }
+            
+            console.log(`| Compilation | ${formatDuration(windowsMetrics.compile_duration)} | ${formatDuration(linuxMetrics.compile_duration)} | ${calculateImprovement(windowsMetrics.compile_duration, linuxMetrics.compile_duration)} |`);
+            console.log(`| Testing | ${formatDuration(windowsMetrics.test_duration)} | ${formatDuration(linuxMetrics.test_duration)} | ${calculateImprovement(windowsMetrics.test_duration, linuxMetrics.test_duration)} |`);
+            console.log(`| **Total Build Time** | **${formatDuration(windowsMetrics.total_duration)}** | **${formatDuration(linuxMetrics.total_duration)}** | **${calculateImprovement(windowsMetrics.total_duration, linuxMetrics.total_duration)}** |`);
+            
+            const totalImprovement = ((windowsMetrics.total_duration - linuxMetrics.total_duration) / windowsMetrics.total_duration) * 100;
+            
+            console.log('\n## 🎯 Key Insights\n');
+            
+            if (totalImprovement > 0) {
+                console.log(`✅ **Linux builds are ${totalImprovement.toFixed(1)}% faster** than Windows builds!`);
+                console.log(`⏱️ **Time saved**: ${formatDuration(windowsMetrics.total_duration - linuxMetrics.total_duration)} per build`);
+            } else if (totalImprovement < 0) {
+                console.log(`⚠️ Windows builds are ${Math.abs(totalImprovement).toFixed(1)}% faster than Linux builds`);
+            } else {
+                console.log('🤔 Build times are approximately equal between platforms');
+            }
+            
+            // Find the stage with the biggest improvement
+            const stages = [
+                { name: 'AL/Tools Installation', improvement: ((windowsMetrics.al_install_duration - linuxMetrics.al_install_duration) / windowsMetrics.al_install_duration) * 100 },
+                { name: 'Compilation', improvement: ((windowsMetrics.compile_duration - linuxMetrics.compile_duration) / windowsMetrics.compile_duration) * 100 },
+                { name: 'Testing', improvement: ((windowsMetrics.test_duration - linuxMetrics.test_duration) / windowsMetrics.test_duration) * 100 }
+            ];
+            
+            // Add setup comparison if both metrics exist
+            if (windowsMetrics.container_creation_duration && linuxMetrics.dependency_download_duration) {
+                stages.push({ 
+                    name: 'Setup (Container vs Dependencies)', 
+                    improvement: ((windowsMetrics.container_creation_duration - linuxMetrics.dependency_download_duration) / windowsMetrics.container_creation_duration) * 100 
+                });
+            }
+            
+            const bestStage = stages.reduce((max, stage) => stage.improvement > max.improvement ? stage : max);
+            if (bestStage.improvement > 0) {
+                console.log(`🏆 **Biggest improvement**: ${bestStage.name} (${bestStage.improvement.toFixed(1)}% faster on Linux)`);
+            }
+            
+            console.log('\n## 📈 Performance Trends\n');
+            console.log('### Build Timeline Comparison\n');
+            console.log('**Windows Build Breakdown (with BC Container):**');
+            console.log(`- AL/BCContainerHelper Installation: ${((windowsMetrics.al_install_duration / windowsMetrics.total_duration) * 100).toFixed(1)}% of total time`);
+            if (windowsMetrics.container_creation_duration) {
+                console.log(`- BC Container Creation: ${((windowsMetrics.container_creation_duration / windowsMetrics.total_duration) * 100).toFixed(1)}% of total time`);
+            }
+            console.log(`- Compilation & Publishing: ${((windowsMetrics.compile_duration / windowsMetrics.total_duration) * 100).toFixed(1)}% of total time`);
+            console.log(`- Real Test Execution: ${((windowsMetrics.test_duration / windowsMetrics.total_duration) * 100).toFixed(1)}% of total time`);
+            
+            console.log('\n**Linux Build Breakdown:**');
+            console.log(`- AL Installation: ${((linuxMetrics.al_install_duration / linuxMetrics.total_duration) * 100).toFixed(1)}% of total time`);
+            if (linuxMetrics.dependency_download_duration) {
+                console.log(`- Dependencies: ${((linuxMetrics.dependency_download_duration / linuxMetrics.total_duration) * 100).toFixed(1)}% of total time`);
+            }
+            console.log(`- Compilation: ${((linuxMetrics.compile_duration / linuxMetrics.total_duration) * 100).toFixed(1)}% of total time`);
+            console.log(`- Mock Testing: ${((linuxMetrics.test_duration / linuxMetrics.total_duration) * 100).toFixed(1)}% of total time`);
+            
+            console.log('\n### Key Differences');
+            if (windowsMetrics.uses_container) {
+                console.log('- **Windows**: Uses full BC Container with real test execution');
+                console.log('- **Linux**: Simple compilation with mock testing');
+                console.log('- **Note**: Performance comparison includes container overhead vs basic compilation');
+            }
+            
+        } else {
+            console.log('## 📊 Available Metrics\n');
+            if (windowsMetrics) {
+                console.log('### Windows Build Results (with BC Container)');
+                console.log(`- Total time: ${formatDuration(windowsMetrics.total_duration)}`);
+                console.log(`- AL/BCContainerHelper Installation: ${formatDuration(windowsMetrics.al_install_duration)}`);
+                if (windowsMetrics.container_creation_duration) {
+                    console.log(`- BC Container Creation: ${formatDuration(windowsMetrics.container_creation_duration)}`);
+                }
+                console.log(`- Compilation & Publishing: ${formatDuration(windowsMetrics.compile_duration)}`);
+                console.log(`- Real Test Execution: ${formatDuration(windowsMetrics.test_duration)}`);
+                console.log(`- Completed: ${windowsMetrics.timestamp}`);
+            }
+            
+            if (linuxMetrics) {
+                console.log('### Linux Build Results');
+                console.log(`- Total time: ${formatDuration(linuxMetrics.total_duration)}`);
+                console.log(`- AL Installation: ${formatDuration(linuxMetrics.al_install_duration)}`);
+                console.log(`- Dependency Download: ${formatDuration(linuxMetrics.dependency_download_duration)}`);
+                console.log(`- Compilation: ${formatDuration(linuxMetrics.compile_duration)}`);
+                console.log(`- Testing: ${formatDuration(linuxMetrics.test_duration)}`);
+                console.log(`- Completed: ${linuxMetrics.timestamp}`);
+            }
+        }
+        
+        console.log('\n---\n');
+        console.log('*This comparison was generated automatically by the Performance Comparison workflow.*');
+        EOF
+        
+    - name: Generate comprehensive comparison report
+      run: |
+        echo "Generating comprehensive performance comparison report..."
+        node performance-analyzer.js > performance-comparison.md
+        
+    - name: Display comparison report
+      run: |
+        echo "Performance Comparison Report:"
+        echo "====================================="
+        cat performance-comparison.md
+        
+    - name: Upload comparison report and raw data
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-analysis-complete
+        path: |
+          performance-comparison.md
+          comprehensive-performance-data.json
+        retention-days: 90
+        
+    - name: Comment on PR (if applicable)
+      uses: actions/github-script@v7
+      if: github.event_name == 'pull_request'
+      with:
+        script: |
+          const fs = require('fs');
+          const reportContent = fs.readFileSync('performance-comparison.md', 'utf8');
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: reportContent
+          });

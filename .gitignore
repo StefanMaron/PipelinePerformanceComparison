@@ -1,0 +1,24 @@
+# AL Language Extension
+bin/
+*.app
+.alpackages/
+
+# Build artifacts
+windows-build-metrics.json
+linux-build-metrics.json
+performance-comparison.md
+
+# Logs
+*.log
+
+# IDE files
+.vscode/
+.vs/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+temp*/
+*.tmp

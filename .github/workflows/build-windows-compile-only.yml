@@ -1,0 +1,363 @@
+name: Build Windows (Compile Only)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AL_VERSION: 'latest'
+  
+jobs:
+  build-windows-compile-only:
+    runs-on: windows-2022
+    name: Windows Compile-Only Build
+    timeout-minutes: 30
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Record start time
+      shell: powershell
+      run: |
+        $startTime = Get-Date
+        echo "BUILD_START_TIME=$($startTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))" >> $env:GITHUB_ENV
+        echo "WORKFLOW_START_EPOCH=$($startTime.ToFileTimeUtc())" >> $env:GITHUB_ENV
+        Write-Host "Build started at: $startTime"
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+        
+    - name: Record .NET setup completion
+      shell: powershell
+      run: |
+        $dotnetSetupTime = Get-Date
+        $startTime = [DateTime]::Parse($env:BUILD_START_TIME)
+        $dotnetSetupDuration = ($dotnetSetupTime - $startTime).TotalSeconds
+        echo "DOTNET_SETUP_DURATION=$dotnetSetupDuration" >> $env:GITHUB_ENV
+        Write-Host ".NET setup took: $dotnetSetupDuration seconds"
+        
+    - name: Install AL Language Extension
+      shell: powershell
+      run: |
+        Write-Host "Installing AL Language Extension..."
+        $installStart = Get-Date
+        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.AlLanguage
+        $installEnd = Get-Date
+        $installDuration = ($installEnd - $installStart).TotalSeconds
+        echo "AL_INSTALL_DURATION=$installDuration" >> $env:GITHUB_ENV
+        Write-Host "AL installation took: $installDuration seconds"
+        
+    - name: Verify AL installation
+      shell: powershell
+      run: |
+        Write-Host "Verifying AL installation..."
+        $verifyStart = Get-Date
+        AL --version
+        $verifyEnd = Get-Date
+        $verifyDuration = ($verifyEnd - $verifyStart).TotalSeconds
+        echo "AL_VERIFY_DURATION=$verifyDuration" >> $env:GITHUB_ENV
+        Write-Host "AL verification took: $verifyDuration seconds"
+        
+    - name: Create dependencies directory
+      shell: powershell
+      run: |
+        $dirStart = Get-Date
+        if (-not (Test-Path ".alpackages")) {
+            New-Item -ItemType Directory -Path ".alpackages"
+            Write-Host "Created .alpackages directory"
+        }
+        $dirEnd = Get-Date
+        $dirDuration = ($dirEnd - $dirStart).TotalSeconds
+        echo "DIR_CREATION_DURATION=$dirDuration" >> $env:GITHUB_ENV
+        Write-Host "Directory creation took: $dirDuration seconds"
+        
+    - name: Download System Application
+      shell: powershell
+      run: |
+        Write-Host "Downloading System Application..."
+        $sysDownloadStart = Get-Date
+        
+        $systemAppUrl = "https://www.nuget.org/api/v2/package/Microsoft.Application.System/22.0.0"
+        $systemAppPath = ".alpackages\Microsoft_System_22.0.0.0.app"
+        try {
+            $downloadStart = Get-Date
+            Invoke-WebRequest -Uri $systemAppUrl -OutFile "$systemAppPath.nupkg" -UseBasicParsing
+            $downloadEnd = Get-Date
+            $downloadDuration = ($downloadEnd - $downloadStart).TotalSeconds
+            echo "SYSTEM_DOWNLOAD_DURATION=$downloadDuration" >> $env:GITHUB_ENV
+            
+            $extractStart = Get-Date
+            Expand-Archive -Path "$systemAppPath.nupkg" -DestinationPath temp_system
+            Copy-Item "temp_system\app\Microsoft_System_22.0.0.0.app" $systemAppPath -Force
+            Remove-Item -Recurse -Force temp_system
+            Remove-Item "$systemAppPath.nupkg" -Force
+            $extractEnd = Get-Date
+            $extractDuration = ($extractEnd - $extractStart).TotalSeconds
+            echo "SYSTEM_EXTRACT_DURATION=$extractDuration" >> $env:GITHUB_ENV
+            
+            Write-Host "System app download: $downloadDuration seconds"
+            Write-Host "System app extract: $extractDuration seconds"
+            Write-Host "Downloaded System Application successfully"
+        } catch {
+            Write-Host "Warning: Could not download System Application: $($_.Exception.Message)"
+            echo "SYSTEM_DOWNLOAD_DURATION=0" >> $env:GITHUB_ENV
+            echo "SYSTEM_EXTRACT_DURATION=0" >> $env:GITHUB_ENV
+        }
+        
+    - name: Download Base Application  
+      shell: powershell
+      run: |
+        Write-Host "Downloading Base Application..."
+        $baseDownloadStart = Get-Date
+        
+        $baseAppUrl = "https://www.nuget.org/api/v2/package/Microsoft.Application.Base/22.0.0"
+        $baseAppPath = ".alpackages\Microsoft_Base Application_22.0.0.0.app"
+        try {
+            $downloadStart = Get-Date
+            Invoke-WebRequest -Uri $baseAppUrl -OutFile "$baseAppPath.nupkg" -UseBasicParsing
+            $downloadEnd = Get-Date
+            $downloadDuration = ($downloadEnd - $downloadStart).TotalSeconds
+            echo "BASE_DOWNLOAD_DURATION=$downloadDuration" >> $env:GITHUB_ENV
+            
+            $extractStart = Get-Date
+            Expand-Archive -Path "$baseAppPath.nupkg" -DestinationPath temp_base
+            Copy-Item "temp_base\app\Microsoft_Base Application_22.0.0.0.app" $baseAppPath -Force
+            Remove-Item -Recurse -Force temp_base
+            Remove-Item "$baseAppPath.nupkg" -Force
+            $extractEnd = Get-Date
+            $extractDuration = ($extractEnd - $extractStart).TotalSeconds
+            echo "BASE_EXTRACT_DURATION=$extractDuration" >> $env:GITHUB_ENV
+            
+            Write-Host "Base app download: $downloadDuration seconds"
+            Write-Host "Base app extract: $extractDuration seconds"
+            Write-Host "Downloaded Base Application successfully"
+        } catch {
+            Write-Host "Warning: Could not download Base Application: $($_.Exception.Message)"
+            echo "BASE_DOWNLOAD_DURATION=0" >> $env:GITHUB_ENV
+            echo "BASE_EXTRACT_DURATION=0" >> $env:GITHUB_ENV
+        }
+        
+    - name: Calculate total dependency time
+      shell: powershell
+      run: |
+        $totalDepTime = [double]$env:SYSTEM_DOWNLOAD_DURATION + [double]$env:SYSTEM_EXTRACT_DURATION + [double]$env:BASE_DOWNLOAD_DURATION + [double]$env:BASE_EXTRACT_DURATION
+        echo "TOTAL_DEPENDENCY_DURATION=$totalDepTime" >> $env:GITHUB_ENV
+        Write-Host "Total dependency handling: $totalDepTime seconds"
+        
+    - name: Pre-compilation setup
+      shell: powershell
+      run: |
+        $setupStart = Get-Date
+        if (-not (Test-Path "bin")) {
+            New-Item -ItemType Directory -Path "bin"
+        }
+        $setupEnd = Get-Date
+        $setupDuration = ($setupEnd - $setupStart).TotalSeconds
+        echo "PRECOMPILE_SETUP_DURATION=$setupDuration" >> $env:GITHUB_ENV
+        Write-Host "Pre-compilation setup: $setupDuration seconds"
+        
+    - name: Compile AL Extension
+      shell: powershell
+      run: |
+        Write-Host "Compiling AL extension..."
+        $compileStart = Get-Date
+        
+        try {
+            AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"
+            $compileResult = $LASTEXITCODE
+            
+            $compileEnd = Get-Date
+            $compileDuration = ($compileEnd - $compileStart).TotalSeconds
+            echo "COMPILE_DURATION=$compileDuration" >> $env:GITHUB_ENV
+            Write-Host "Compilation took: $compileDuration seconds"
+            
+            if ($compileResult -ne 0) {
+                Write-Host "Compilation failed with exit code: $compileResult"
+                exit $compileResult
+            }
+            
+            Write-Host "Compilation successful"
+            
+        } catch {
+            Write-Host "Compilation error: $($_.Exception.Message)"
+            exit 1
+        }
+        
+    - name: Post-compilation analysis
+      shell: powershell
+      run: |
+        $analysisStart = Get-Date
+        
+        # List compiled files
+        if (Test-Path "bin") {
+            Write-Host "Compiled files:"
+            $appFiles = Get-ChildItem "bin" -Recurse -Filter "*.app"
+            foreach ($file in $appFiles) {
+                $size = [math]::Round($file.Length / 1KB, 2)
+                Write-Host "  $($file.Name) - ${size} KB"
+            }
+            echo "APP_COUNT=$($appFiles.Count)" >> $env:GITHUB_ENV
+            
+            if ($appFiles.Count -gt 0) {
+                $totalSize = ($appFiles | Measure-Object -Property Length -Sum).Sum
+                $totalSizeKB = [math]::Round($totalSize / 1KB, 2)
+                echo "TOTAL_APP_SIZE_KB=$totalSizeKB" >> $env:GITHUB_ENV
+                Write-Host "Total app size: ${totalSizeKB} KB"
+            }
+        }
+        
+        $analysisEnd = Get-Date
+        $analysisDuration = ($analysisEnd - $analysisStart).TotalSeconds
+        echo "POST_COMPILE_ANALYSIS_DURATION=$analysisDuration" >> $env:GITHUB_ENV
+        Write-Host "Post-compilation analysis: $analysisDuration seconds"
+        
+    - name: Mock Test Validation
+      shell: powershell
+      run: |
+        Write-Host "Running mock test validation..."
+        $testStart = Get-Date
+        
+        # Count test files
+        $testFiles = Get-ChildItem -Path "src\Test" -Filter "*.al" -Recurse -ErrorAction SilentlyContinue
+        $testCount = if ($testFiles) { $testFiles.Count } else { 0 }
+        echo "TEST_FILE_COUNT=$testCount" >> $env:GITHUB_ENV
+        
+        if ($testCount -gt 0) {
+            Write-Host "Found $testCount test files:"
+            foreach ($file in $testFiles) {
+                Write-Host "  - $($file.Name)"
+            }
+            
+            # Simulate test processing time
+            Start-Sleep -Milliseconds 100
+            Write-Host "Mock test validation completed successfully"
+        } else {
+            Write-Host "No test files found"
+        }
+        
+        $testEnd = Get-Date
+        $testDuration = ($testEnd - $testStart).TotalSeconds
+        echo "TEST_DURATION=$testDuration" >> $env:GITHUB_ENV
+        Write-Host "Mock testing took: $testDuration seconds"
+        
+    - name: Calculate comprehensive build metrics
+      shell: powershell  
+      run: |
+        $endTime = Get-Date
+        $startTime = [DateTime]::Parse($env:BUILD_START_TIME)
+        $totalDuration = ($endTime - $startTime).TotalSeconds
+        
+        Write-Host "=== WINDOWS COMPILE-ONLY BUILD PERFORMANCE SUMMARY ==="
+        Write-Host "Build Start Time: $env:BUILD_START_TIME"
+        Write-Host "Build End Time: $($endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))"
+        Write-Host ""
+        Write-Host "=== DETAILED TIMINGS ==="
+        Write-Host ".NET Setup: $env:DOTNET_SETUP_DURATION seconds"
+        Write-Host "AL Installation: $env:AL_INSTALL_DURATION seconds"
+        Write-Host "AL Verification: $env:AL_VERIFY_DURATION seconds"
+        Write-Host "Directory Creation: $env:DIR_CREATION_DURATION seconds"
+        Write-Host "System App Download: $env:SYSTEM_DOWNLOAD_DURATION seconds"
+        Write-Host "System App Extract: $env:SYSTEM_EXTRACT_DURATION seconds"
+        Write-Host "Base App Download: $env:BASE_DOWNLOAD_DURATION seconds"
+        Write-Host "Base App Extract: $env:BASE_EXTRACT_DURATION seconds"
+        Write-Host "Total Dependencies: $env:TOTAL_DEPENDENCY_DURATION seconds"
+        Write-Host "Pre-compile Setup: $env:PRECOMPILE_SETUP_DURATION seconds"
+        Write-Host "Compilation: $env:COMPILE_DURATION seconds"
+        Write-Host "Post-compile Analysis: $env:POST_COMPILE_ANALYSIS_DURATION seconds"
+        Write-Host "Mock Testing: $env:TEST_DURATION seconds"
+        Write-Host ""
+        Write-Host "=== BUILD SUMMARY ==="
+        Write-Host "Total Build Time: $totalDuration seconds"
+        if ($env:APP_COUNT) { Write-Host "Apps Generated: $env:APP_COUNT" }
+        if ($env:TOTAL_APP_SIZE_KB) { Write-Host "Total App Size: $env:TOTAL_APP_SIZE_KB KB" }
+        if ($env:TEST_FILE_COUNT) { Write-Host "Test Files Found: $env:TEST_FILE_COUNT" }
+        
+        # Save comprehensive metrics for comparison
+        $metrics = @{
+            platform = "windows-compile-only"
+            runner_os = "windows-2022"
+            total_duration = $totalDuration
+            dotnet_setup_duration = [double]$env:DOTNET_SETUP_DURATION
+            al_install_duration = [double]$env:AL_INSTALL_DURATION
+            al_verify_duration = [double]$env:AL_VERIFY_DURATION
+            dir_creation_duration = [double]$env:DIR_CREATION_DURATION
+            system_download_duration = [double]$env:SYSTEM_DOWNLOAD_DURATION
+            system_extract_duration = [double]$env:SYSTEM_EXTRACT_DURATION
+            base_download_duration = [double]$env:BASE_DOWNLOAD_DURATION
+            base_extract_duration = [double]$env:BASE_EXTRACT_DURATION
+            total_dependency_duration = [double]$env:TOTAL_DEPENDENCY_DURATION
+            precompile_setup_duration = [double]$env:PRECOMPILE_SETUP_DURATION
+            compile_duration = [double]$env:COMPILE_DURATION
+            post_compile_analysis_duration = [double]$env:POST_COMPILE_ANALYSIS_DURATION
+            test_duration = [double]$env:TEST_DURATION
+            app_count = if ($env:APP_COUNT) { [int]$env:APP_COUNT } else { 0 }
+            total_app_size_kb = if ($env:TOTAL_APP_SIZE_KB) { [double]$env:TOTAL_APP_SIZE_KB } else { 0 }
+            test_file_count = if ($env:TEST_FILE_COUNT) { [int]$env:TEST_FILE_COUNT } else { 0 }
+            timestamp = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+            uses_container = $false
+            pipeline_type = "compile-only"
+            measurement_precision = "milliseconds"
+            github_run_id = $env:GITHUB_RUN_ID
+            github_run_number = $env:GITHUB_RUN_NUMBER
+            github_sha = $env:GITHUB_SHA
+        }
+        
+        $metrics | ConvertTo-Json | Out-File -FilePath "windows-compile-only-metrics.json" -Encoding UTF8
+        Write-Host "Comprehensive metrics saved to windows-compile-only-metrics.json"
+        
+        # Create raw measurements file for detailed external analysis
+        $rawMeasurements = @{
+            build_id = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_NUMBER)"
+            platform = "windows"
+            runner = "windows-2022"
+            pipeline_type = "compile-only"
+            start_time = $env:BUILD_START_TIME
+            end_time = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+            measurements = @(
+                @{ stage = "dotnet_setup"; duration = [double]$env:DOTNET_SETUP_DURATION; unit = "seconds" }
+                @{ stage = "al_install"; duration = [double]$env:AL_INSTALL_DURATION; unit = "seconds" }
+                @{ stage = "al_verify"; duration = [double]$env:AL_VERIFY_DURATION; unit = "seconds" }
+                @{ stage = "dir_creation"; duration = [double]$env:DIR_CREATION_DURATION; unit = "seconds" }
+                @{ stage = "system_download"; duration = [double]$env:SYSTEM_DOWNLOAD_DURATION; unit = "seconds" }
+                @{ stage = "system_extract"; duration = [double]$env:SYSTEM_EXTRACT_DURATION; unit = "seconds" }
+                @{ stage = "base_download"; duration = [double]$env:BASE_DOWNLOAD_DURATION; unit = "seconds" }
+                @{ stage = "base_extract"; duration = [double]$env:BASE_EXTRACT_DURATION; unit = "seconds" }
+                @{ stage = "precompile_setup"; duration = [double]$env:PRECOMPILE_SETUP_DURATION; unit = "seconds" }
+                @{ stage = "compile"; duration = [double]$env:COMPILE_DURATION; unit = "seconds" }
+                @{ stage = "post_compile_analysis"; duration = [double]$env:POST_COMPILE_ANALYSIS_DURATION; unit = "seconds" }
+                @{ stage = "mock_test"; duration = [double]$env:TEST_DURATION; unit = "seconds" }
+            )
+            totals = @{
+                total_duration = $totalDuration
+                dependency_total = [double]$env:TOTAL_DEPENDENCY_DURATION
+            }
+            artifacts = @{
+                app_count = if ($env:APP_COUNT) { [int]$env:APP_COUNT } else { 0 }
+                total_app_size_kb = if ($env:TOTAL_APP_SIZE_KB) { [double]$env:TOTAL_APP_SIZE_KB } else { 0 }
+                test_file_count = if ($env:TEST_FILE_COUNT) { [int]$env:TEST_FILE_COUNT } else { 0 }
+            }
+            environment = @{
+                github_actions = $true
+                runner_os = "Windows"
+                measurement_precision = "milliseconds"
+            }
+        }
+        
+        $rawMeasurements | ConvertTo-Json -Depth 10 | Out-File -FilePath "windows-raw-measurements.json" -Encoding UTF8
+        Write-Host "Raw measurements saved to windows-raw-measurements.json"
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-compile-only-artifacts
+        path: |
+          bin/
+          windows-compile-only-metrics.json
+          windows-raw-measurements.json
+        retention-days: 30

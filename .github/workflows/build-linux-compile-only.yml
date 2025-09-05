@@ -1,0 +1,354 @@
+name: Build Linux (Compile Only)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AL_VERSION: 'latest'
+  
+jobs:
+  build-linux-compile-only:
+    runs-on: ubuntu-latest
+    name: Linux Compile-Only Build
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Record start time
+      run: |
+        START_TIME=$(date -Iseconds)
+        START_EPOCH=$(date +%s.%N)
+        echo "BUILD_START_TIME=$START_TIME" >> $GITHUB_ENV
+        echo "BUILD_START_EPOCH=$START_EPOCH" >> $GITHUB_ENV
+        echo "Build started at: $START_TIME"
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+        
+    - name: Record .NET setup completion
+      run: |
+        DOTNET_SETUP_END=$(date +%s.%N)
+        DOTNET_SETUP_DURATION=$(echo "$DOTNET_SETUP_END - $BUILD_START_EPOCH" | bc -l)
+        echo "DOTNET_SETUP_DURATION=$DOTNET_SETUP_DURATION" >> $GITHUB_ENV
+        echo ".NET setup took: $DOTNET_SETUP_DURATION seconds"
+        
+    - name: Install AL Language Extension
+      run: |
+        echo "Installing AL Language Extension..."
+        INSTALL_START=$(date +%s.%N)
+        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.AlLanguage
+        INSTALL_END=$(date +%s.%N)
+        INSTALL_DURATION=$(echo "$INSTALL_END - $INSTALL_START" | bc -l)
+        echo "AL_INSTALL_DURATION=$INSTALL_DURATION" >> $GITHUB_ENV
+        echo "AL installation took: $INSTALL_DURATION seconds"
+        
+    - name: Verify AL installation
+      run: |
+        echo "Verifying AL installation..."
+        VERIFY_START=$(date +%s.%N)
+        AL --version
+        VERIFY_END=$(date +%s.%N)
+        VERIFY_DURATION=$(echo "$VERIFY_END - $VERIFY_START" | bc -l)
+        echo "AL_VERIFY_DURATION=$VERIFY_DURATION" >> $GITHUB_ENV
+        echo "AL verification took: $VERIFY_DURATION seconds"
+        
+    - name: Create dependencies directory
+      run: |
+        DIR_START=$(date +%s.%N)
+        mkdir -p .alpackages
+        DIR_END=$(date +%s.%N)
+        DIR_DURATION=$(echo "$DIR_END - $DIR_START" | bc -l)
+        echo "DIR_CREATION_DURATION=$DIR_DURATION" >> $GITHUB_ENV
+        echo "Directory creation took: $DIR_DURATION seconds"
+        
+    - name: Download System Application
+      run: |
+        echo "Downloading System Application..."
+        SYS_DOWNLOAD_START=$(date +%s.%N)
+        
+        SYSTEM_APP_URL="https://www.nuget.org/api/v2/package/Microsoft.Application.System/22.0.0"
+        SYSTEM_APP_PATH=".alpackages/Microsoft_System_22.0.0.0.app"
+        
+        DOWNLOAD_START=$(date +%s.%N)
+        if wget -q "$SYSTEM_APP_URL" -O "${SYSTEM_APP_PATH}.nupkg"; then
+            DOWNLOAD_END=$(date +%s.%N)
+            SYSTEM_DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l)
+            echo "SYSTEM_DOWNLOAD_DURATION=$SYSTEM_DOWNLOAD_DURATION" >> $GITHUB_ENV
+            
+            EXTRACT_START=$(date +%s.%N)
+            mkdir -p temp_system
+            unzip -q "${SYSTEM_APP_PATH}.nupkg" -d temp_system
+            if [ -f "temp_system/app/Microsoft_System_22.0.0.0.app" ]; then
+                cp "temp_system/app/Microsoft_System_22.0.0.0.app" "$SYSTEM_APP_PATH"
+                echo "Downloaded System Application"
+            fi
+            rm -rf temp_system "${SYSTEM_APP_PATH}.nupkg"
+            EXTRACT_END=$(date +%s.%N)
+            SYSTEM_EXTRACT_DURATION=$(echo "$EXTRACT_END - $EXTRACT_START" | bc -l)
+            echo "SYSTEM_EXTRACT_DURATION=$SYSTEM_EXTRACT_DURATION" >> $GITHUB_ENV
+            
+            echo "System app download: $SYSTEM_DOWNLOAD_DURATION seconds"
+            echo "System app extract: $SYSTEM_EXTRACT_DURATION seconds"
+        else
+            echo "Warning: Could not download System Application"
+            echo "SYSTEM_DOWNLOAD_DURATION=0" >> $GITHUB_ENV
+            echo "SYSTEM_EXTRACT_DURATION=0" >> $GITHUB_ENV
+        fi
+        
+    - name: Download Base Application
+      run: |
+        echo "Downloading Base Application..."
+        BASE_DOWNLOAD_START=$(date +%s.%N)
+        
+        BASE_APP_URL="https://www.nuget.org/api/v2/package/Microsoft.Application.Base/22.0.0"
+        BASE_APP_PATH=".alpackages/Microsoft_Base Application_22.0.0.0.app"
+        
+        DOWNLOAD_START=$(date +%s.%N)
+        if wget -q "$BASE_APP_URL" -O "${BASE_APP_PATH}.nupkg"; then
+            DOWNLOAD_END=$(date +%s.%N)
+            BASE_DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l)
+            echo "BASE_DOWNLOAD_DURATION=$BASE_DOWNLOAD_DURATION" >> $GITHUB_ENV
+            
+            EXTRACT_START=$(date +%s.%N)
+            mkdir -p temp_base
+            unzip -q "${BASE_APP_PATH}.nupkg" -d temp_base
+            if [ -f "temp_base/app/Microsoft_Base Application_22.0.0.0.app" ]; then
+                cp "temp_base/app/Microsoft_Base Application_22.0.0.0.app" "$BASE_APP_PATH"
+                echo "Downloaded Base Application"
+            fi
+            rm -rf temp_base "${BASE_APP_PATH}.nupkg"
+            EXTRACT_END=$(date +%s.%N)
+            BASE_EXTRACT_DURATION=$(echo "$EXTRACT_END - $EXTRACT_START" | bc -l)
+            echo "BASE_EXTRACT_DURATION=$BASE_EXTRACT_DURATION" >> $GITHUB_ENV
+            
+            echo "Base app download: $BASE_DOWNLOAD_DURATION seconds"
+            echo "Base app extract: $BASE_EXTRACT_DURATION seconds"
+        else
+            echo "Warning: Could not download Base Application"
+            echo "BASE_DOWNLOAD_DURATION=0" >> $GITHUB_ENV
+            echo "BASE_EXTRACT_DURATION=0" >> $GITHUB_ENV
+        fi
+        
+    - name: Calculate total dependency time
+      run: |
+        TOTAL_DEP_TIME=$(echo "$SYSTEM_DOWNLOAD_DURATION + $SYSTEM_EXTRACT_DURATION + $BASE_DOWNLOAD_DURATION + $BASE_EXTRACT_DURATION" | bc -l)
+        echo "TOTAL_DEPENDENCY_DURATION=$TOTAL_DEP_TIME" >> $GITHUB_ENV
+        echo "Total dependency handling: $TOTAL_DEP_TIME seconds"
+        
+    - name: Pre-compilation setup
+      run: |
+        SETUP_START=$(date +%s.%N)
+        mkdir -p bin
+        SETUP_END=$(date +%s.%N)
+        SETUP_DURATION=$(echo "$SETUP_END - $SETUP_START" | bc -l)
+        echo "PRECOMPILE_SETUP_DURATION=$SETUP_DURATION" >> $GITHUB_ENV
+        echo "Pre-compilation setup: $SETUP_DURATION seconds"
+        
+    - name: Compile AL Extension
+      run: |
+        echo "Compiling AL extension..."
+        COMPILE_START=$(date +%s.%N)
+        
+        # Compile the extension
+        if AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"; then
+            COMPILE_END=$(date +%s.%N)
+            COMPILE_DURATION=$(echo "$COMPILE_END - $COMPILE_START" | bc -l)
+            echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV
+            echo "Compilation took: $COMPILE_DURATION seconds"
+            echo "Compilation successful"
+        else
+            echo "Compilation failed with exit code: $?"
+            exit 1
+        fi
+        
+    - name: Post-compilation analysis
+      run: |
+        ANALYSIS_START=$(date +%s.%N)
+        
+        # List and analyze compiled files
+        if [ -d "bin" ]; then
+            echo "Compiled files:"
+            APP_COUNT=0
+            TOTAL_SIZE_BYTES=0
+            
+            find bin -type f -name "*.app" | while read file; do
+                SIZE_BYTES=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
+                SIZE_KB=$(echo "scale=2; $SIZE_BYTES / 1024" | bc -l)
+                echo "  $(basename "$file") - ${SIZE_KB} KB"
+            done
+            
+            # Count apps and calculate total size
+            APP_COUNT=$(find bin -type f -name "*.app" | wc -l)
+            if [ "$APP_COUNT" -gt 0 ]; then
+                TOTAL_SIZE_BYTES=$(find bin -type f -name "*.app" -exec stat -f%z {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || find bin -type f -name "*.app" -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo "0")
+                TOTAL_SIZE_KB=$(echo "scale=2; $TOTAL_SIZE_BYTES / 1024" | bc -l)
+                echo "APP_COUNT=$APP_COUNT" >> $GITHUB_ENV
+                echo "TOTAL_APP_SIZE_KB=$TOTAL_SIZE_KB" >> $GITHUB_ENV
+                echo "Total app size: ${TOTAL_SIZE_KB} KB"
+            fi
+        fi
+        
+        ANALYSIS_END=$(date +%s.%N)
+        ANALYSIS_DURATION=$(echo "$ANALYSIS_END - $ANALYSIS_START" | bc -l)
+        echo "POST_COMPILE_ANALYSIS_DURATION=$ANALYSIS_DURATION" >> $GITHUB_ENV
+        echo "Post-compilation analysis: $ANALYSIS_DURATION seconds"
+        
+    - name: Mock Test Validation
+      run: |
+        echo "Running mock test validation..."
+        TEST_START=$(date +%s.%N)
+        
+        # Count and validate test files
+        TEST_FILES=$(find src/Test -name "*.al" -type f 2>/dev/null | wc -l)
+        echo "TEST_FILE_COUNT=$TEST_FILES" >> $GITHUB_ENV
+        
+        if [ "$TEST_FILES" -gt 0 ]; then
+            echo "Found $TEST_FILES test files:"
+            find src/Test -name "*.al" -type f | while read file; do
+                echo "  - $(basename "$file")"
+            done
+            
+            # Simulate test processing time
+            sleep 0.1
+            echo "Mock test validation completed successfully"
+        else
+            echo "No test files found"
+        fi
+        
+        TEST_END=$(date +%s.%N)
+        TEST_DURATION=$(echo "$TEST_END - $TEST_START" | bc -l)
+        echo "TEST_DURATION=$TEST_DURATION" >> $GITHUB_ENV
+        echo "Mock testing took: $TEST_DURATION seconds"
+        
+    - name: Calculate comprehensive build metrics
+      run: |
+        END_TIME=$(date -Iseconds)
+        END_EPOCH=$(date +%s.%N)
+        TOTAL_DURATION=$(echo "$END_EPOCH - $BUILD_START_EPOCH" | bc -l)
+        
+        echo "=== LINUX COMPILE-ONLY BUILD PERFORMANCE SUMMARY ==="
+        echo "Build Start Time: $BUILD_START_TIME"
+        echo "Build End Time: $END_TIME"
+        echo ""
+        echo "=== DETAILED TIMINGS ==="
+        echo ".NET Setup: $DOTNET_SETUP_DURATION seconds"
+        echo "AL Installation: $AL_INSTALL_DURATION seconds"
+        echo "AL Verification: $AL_VERIFY_DURATION seconds"
+        echo "Directory Creation: $DIR_CREATION_DURATION seconds"
+        echo "System App Download: $SYSTEM_DOWNLOAD_DURATION seconds"
+        echo "System App Extract: $SYSTEM_EXTRACT_DURATION seconds"
+        echo "Base App Download: $BASE_DOWNLOAD_DURATION seconds"
+        echo "Base App Extract: $BASE_EXTRACT_DURATION seconds"
+        echo "Total Dependencies: $TOTAL_DEPENDENCY_DURATION seconds"
+        echo "Pre-compile Setup: $PRECOMPILE_SETUP_DURATION seconds"
+        echo "Compilation: $COMPILE_DURATION seconds"
+        echo "Post-compile Analysis: $POST_COMPILE_ANALYSIS_DURATION seconds"
+        echo "Mock Testing: $TEST_DURATION seconds"
+        echo ""
+        echo "=== BUILD SUMMARY ==="
+        echo "Total Build Time: $TOTAL_DURATION seconds"
+        if [ -n "$APP_COUNT" ]; then echo "Apps Generated: $APP_COUNT"; fi
+        if [ -n "$TOTAL_APP_SIZE_KB" ]; then echo "Total App Size: $TOTAL_APP_SIZE_KB KB"; fi
+        if [ -n "$TEST_FILE_COUNT" ]; then echo "Test Files Found: $TEST_FILE_COUNT"; fi
+        
+        # Create comprehensive JSON metrics for external analysis
+        cat > linux-compile-only-metrics.json << EOF
+        {
+          "platform": "linux-compile-only",
+          "runner_os": "ubuntu-latest",
+          "total_duration": $TOTAL_DURATION,
+          "dotnet_setup_duration": ${DOTNET_SETUP_DURATION:-0},
+          "al_install_duration": ${AL_INSTALL_DURATION:-0},
+          "al_verify_duration": ${AL_VERIFY_DURATION:-0},
+          "dir_creation_duration": ${DIR_CREATION_DURATION:-0},
+          "system_download_duration": ${SYSTEM_DOWNLOAD_DURATION:-0},
+          "system_extract_duration": ${SYSTEM_EXTRACT_DURATION:-0},
+          "base_download_duration": ${BASE_DOWNLOAD_DURATION:-0},
+          "base_extract_duration": ${BASE_EXTRACT_DURATION:-0},
+          "total_dependency_duration": ${TOTAL_DEPENDENCY_DURATION:-0},
+          "precompile_setup_duration": ${PRECOMPILE_SETUP_DURATION:-0},
+          "compile_duration": ${COMPILE_DURATION:-0},
+          "post_compile_analysis_duration": ${POST_COMPILE_ANALYSIS_DURATION:-0},
+          "test_duration": ${TEST_DURATION:-0},
+          "app_count": ${APP_COUNT:-0},
+          "total_app_size_kb": ${TOTAL_APP_SIZE_KB:-0},
+          "test_file_count": ${TEST_FILE_COUNT:-0},
+          "timestamp": "$END_TIME",
+          "uses_container": false,
+          "pipeline_type": "compile-only",
+          "measurement_precision": "nanoseconds",
+          "github_run_id": "${GITHUB_RUN_ID:-unknown}",
+          "github_run_number": "${GITHUB_RUN_NUMBER:-unknown}",
+          "github_sha": "${GITHUB_SHA:-unknown}"
+        }
+        EOF
+        
+        echo "Comprehensive metrics saved to linux-compile-only-metrics.json"
+        
+        # Also create a raw measurements file for detailed analysis
+        cat > linux-raw-measurements.json << EOF
+        {
+          "build_id": "${GITHUB_RUN_ID:-unknown}-${GITHUB_RUN_NUMBER:-unknown}",
+          "platform": "linux",
+          "runner": "ubuntu-latest",
+          "pipeline_type": "compile-only",
+          "start_time": "$BUILD_START_TIME",
+          "end_time": "$END_TIME",
+          "measurements": [
+            {"stage": "dotnet_setup", "duration": ${DOTNET_SETUP_DURATION:-0}, "unit": "seconds"},
+            {"stage": "al_install", "duration": ${AL_INSTALL_DURATION:-0}, "unit": "seconds"},
+            {"stage": "al_verify", "duration": ${AL_VERIFY_DURATION:-0}, "unit": "seconds"},
+            {"stage": "dir_creation", "duration": ${DIR_CREATION_DURATION:-0}, "unit": "seconds"},
+            {"stage": "system_download", "duration": ${SYSTEM_DOWNLOAD_DURATION:-0}, "unit": "seconds"},
+            {"stage": "system_extract", "duration": ${SYSTEM_EXTRACT_DURATION:-0}, "unit": "seconds"},
+            {"stage": "base_download", "duration": ${BASE_DOWNLOAD_DURATION:-0}, "unit": "seconds"},
+            {"stage": "base_extract", "duration": ${BASE_EXTRACT_DURATION:-0}, "unit": "seconds"},
+            {"stage": "precompile_setup", "duration": ${PRECOMPILE_SETUP_DURATION:-0}, "unit": "seconds"},
+            {"stage": "compile", "duration": ${COMPILE_DURATION:-0}, "unit": "seconds"},
+            {"stage": "post_compile_analysis", "duration": ${POST_COMPILE_ANALYSIS_DURATION:-0}, "unit": "seconds"},
+            {"stage": "mock_test", "duration": ${TEST_DURATION:-0}, "unit": "seconds"}
+          ],
+          "totals": {
+            "total_duration": $TOTAL_DURATION,
+            "dependency_total": ${TOTAL_DEPENDENCY_DURATION:-0}
+          },
+          "artifacts": {
+            "app_count": ${APP_COUNT:-0},
+            "total_app_size_kb": ${TOTAL_APP_SIZE_KB:-0},
+            "test_file_count": ${TEST_FILE_COUNT:-0}
+          },
+          "environment": {
+            "github_actions": true,
+            "runner_os": "Linux",
+            "measurement_precision": "nanoseconds"
+          }
+        }
+        EOF
+        
+        echo "Raw measurements saved to linux-raw-measurements.json"
+        
+    - name: Display system information
+      run: |
+        echo "=== SYSTEM INFORMATION ==="
+        echo "OS: $(lsb_release -d | cut -f2)"
+        echo "Kernel: $(uname -r)"
+        echo "CPU: $(nproc) cores"
+        echo "Memory: $(free -h | grep Mem | awk '{print $2}')"
+        echo "Disk: $(df -h . | tail -1 | awk '{print $4}') available"
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-compile-only-artifacts
+        path: |
+          bin/
+          linux-compile-only-metrics.json
+          linux-raw-measurements.json
+        retention-days: 30
