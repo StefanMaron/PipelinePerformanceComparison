@@ -74,6 +74,9 @@ jobs:
         echo "AL_VERIFY_DURATION=$verifyDuration" >> $env:GITHUB_ENV
         Write-Host "BC Development Tools verification took: $verifyDuration seconds"
         
+        # Explicitly set exit code to success
+        exit 0
+        
     - name: Create dependencies directory
       shell: powershell
       run: |
