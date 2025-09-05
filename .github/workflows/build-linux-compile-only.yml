@@ -118,9 +118,11 @@ jobs:
              "$BC_BASE_URL/microsoft.application.us.symbols/$BC_VERSION/microsoft.application.us.symbols.$BC_VERSION.nupkg" || echo "Failed to download Application"
         
         # Extract .nupkg files (which are zip files)
+        mkdir -p temp_packages/extracted
         for nupkg in temp_packages/*.nupkg; do
             if [ -f "$nupkg" ] && [ -s "$nupkg" ]; then
                 echo "Extracting $(basename "$nupkg")..."
+                mkdir -p "temp_packages/extracted/$(basename "$nupkg" .nupkg)"
                 unzip -q "$nupkg" -d "temp_packages/extracted/$(basename "$nupkg" .nupkg)" || echo "Failed to extract $nupkg"
             else
                 echo "Skipping empty or missing file: $(basename "$nupkg")"
