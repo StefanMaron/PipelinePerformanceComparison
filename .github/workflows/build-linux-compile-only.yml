@@ -59,23 +59,8 @@ jobs:
         echo "Verifying BC Development Tools installation..."
         VERIFY_START=$(date +%s.%N)
         
-        # Try AL command as documented
-        if command -v AL >/dev/null 2>&1; then
-            echo "Found AL command (uppercase)"
-            echo "AL help output:"
-            AL help | head -3
-            echo "AL command verified successfully"
-        elif [ -f "$HOME/.dotnet/tools/AL" ]; then
-            echo "Found AL at $HOME/.dotnet/tools/AL"
-            echo "AL help output:"
-            $HOME/.dotnet/tools/AL help | head -3
-            echo "AL command verified successfully"
-        else
-            echo "AL command not found in standard locations"
-            echo "Available dotnet tools:"
-            dotnet tool list -g
-            exit 1
-        fi
+        # Test AL command directly
+        AL --version
         
         VERIFY_END=$(date +%s.%N)
         VERIFY_DURATION=$(echo "$VERIFY_END - $VERIFY_START" | bc -l)
@@ -116,6 +101,17 @@ jobs:
         echo "Downloading Microsoft.Application.US.symbols..."
         curl -L -s -o "temp_packages/microsoft.application.us.symbols.nupkg" \
              "$BC_BASE_URL/microsoft.application.us.symbols/$BC_VERSION/microsoft.application.us.symbols.$BC_VERSION.nupkg" || echo "Failed to download Application"
+        
+        # Second-level dependencies
+        echo "Downloading Microsoft.BusinessFoundation.US.symbols (second-level dependency)..."
+        curl -L -s -o "temp_packages/microsoft.businessfoundation.us.symbols.nupkg" \
+             "$BC_BASE_URL/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$BC_VERSION/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$BC_VERSION.nupkg" || echo "Failed to download Business Foundation"
+        
+        # Note: SystemApplication is already downloaded above, but we need a different version for second-level dependency
+        SYSTEM_VERSION="26.0.30643.38226"
+        echo "Downloading Microsoft.SystemApplication.US.symbols v$SYSTEM_VERSION (second-level dependency)..."
+        curl -L -s -o "temp_packages/microsoft.systemapplication.us.symbols.26.0.nupkg" \
+             "$BC_BASE_URL/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$SYSTEM_VERSION/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$SYSTEM_VERSION.nupkg" || echo "Failed to download System Application v26.0"
         
         # Extract .nupkg files (which are zip files)
         mkdir -p temp_packages/extracted
@@ -168,19 +164,8 @@ jobs:
         echo "Compiling AL extension..."
         COMPILE_START=$(date +%s.%N)
         
-        # Use AL command as documented
-        AL_CMD="AL"
-        if command -v AL >/dev/null 2>&1; then
-            AL_CMD="AL"
-        elif [ -f "$HOME/.dotnet/tools/AL" ]; then
-            AL_CMD="$HOME/.dotnet/tools/AL"
-        else
-            echo "AL command not found, cannot compile"
-            exit 1
-        fi
-        
-        echo "Using AL command: $AL_CMD"
-        if $AL_CMD compile /project:"." /packagecachepath:".alpackages" /out:"bin"; then
+        # Use AL command directly
+        if AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"; then
             COMPILE_END=$(date +%s.%N)
             COMPILE_DURATION=$(echo "$COMPILE_END - $COMPILE_START" | bc -l)
             echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV

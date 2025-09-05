@@ -58,22 +58,10 @@ jobs:
       run: |
         Write-Host "Verifying BC Development Tools installation..."
         $verifyStart = Get-Date
-        Write-Host "Verifying AL command is available..."
-        try {
-            $helpOutput = AL help 2>&1
-            $helpText = $helpOutput -join "`n"
-            if ($helpText -match "altool") {
-                Write-Host "AL command verified successfully (altool found)"
-                Write-Host "AL version: $($helpOutput[0])"
-            } else {
-                Write-Host "AL command verification failed. Output was:"
-                Write-Host $helpText
-                exit 1
-            }
-        } catch {
-            Write-Host "AL command verification failed: $($_.Exception.Message)"
-            exit 1
-        }
+        
+        # Test AL command directly
+        AL --version
+        
         $verifyEnd = Get-Date
         $verifyDuration = ($verifyEnd - $verifyStart).TotalSeconds
         echo "AL_VERIFY_DURATION=$verifyDuration" >> $env:GITHUB_ENV
@@ -116,6 +104,15 @@ jobs:
             
             Write-Host "Downloading Microsoft.Application.US.symbols..."
             Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.application.us.symbols/$bcVersion/microsoft.application.us.symbols.$bcVersion.nupkg" -OutFile "temp_packages\microsoft.application.us.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+            
+            # Second-level dependencies
+            Write-Host "Downloading Microsoft.BusinessFoundation.US.symbols (second-level dependency)..."
+            Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$bcVersion/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$bcVersion.nupkg" -OutFile "temp_packages\microsoft.businessfoundation.us.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+            
+            # Note: SystemApplication is already downloaded above, but we need a different version for second-level dependency
+            $systemVersion = "26.0.30643.38226"
+            Write-Host "Downloading Microsoft.SystemApplication.US.symbols v$systemVersion (second-level dependency)..."
+            Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$systemVersion/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$systemVersion.nupkg" -OutFile "temp_packages\microsoft.systemapplication.us.symbols.26.0.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
             
             # Extract .nupkg files (which are zip files)
             Get-ChildItem -Path temp_packages -Filter "*.nupkg" | ForEach-Object {
