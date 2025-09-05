@@ -60,9 +60,14 @@ jobs:
         $verifyStart = Get-Date
         Write-Host "Verifying AL command is available..."
         try {
-            $helpOutput = AL help 2>&1 | Select-Object -First 3
-            Write-Host "AL help output: $($helpOutput -join "`n")"
-            Write-Host "AL command verified successfully"
+            $helpOutput = AL help 2>$null
+            if ($helpOutput -match "altool") {
+                Write-Host "AL command verified successfully (altool found)"
+                Write-Host "AL version: $($helpOutput | Select-Object -First 1)"
+            } else {
+                Write-Host "AL command verification failed: Unexpected output"
+                exit 1
+            }
         } catch {
             Write-Host "AL command verification failed: $($_.Exception.Message)"
             exit 1
@@ -91,27 +96,38 @@ jobs:
         Write-Host "Downloading System Application..."
         $sysDownloadStart = Get-Date
         
-        $systemAppUrl = "https://www.nuget.org/api/v2/package/Microsoft.Application.System/22.0.0"
-        $systemAppPath = ".alpackages\Microsoft_System_22.0.0.0.app"
+        # Download System Application from NuGet v3 API
+        $systemUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.application.system/22.0.0/microsoft.application.system.22.0.0.nupkg"
+        $systemPkg = "temp_system.nupkg"
+        
         try {
             $downloadStart = Get-Date
-            Invoke-WebRequest -Uri $systemAppUrl -OutFile "$systemAppPath.nupkg" -UseBasicParsing
+            Invoke-WebRequest -Uri $systemUrl -OutFile $systemPkg -UseBasicParsing
             $downloadEnd = Get-Date
             $downloadDuration = ($downloadEnd - $downloadStart).TotalSeconds
             echo "SYSTEM_DOWNLOAD_DURATION=$downloadDuration" >> $env:GITHUB_ENV
             
             $extractStart = Get-Date
-            Expand-Archive -Path "$systemAppPath.nupkg" -DestinationPath temp_system
-            Copy-Item "temp_system\app\Microsoft_System_22.0.0.0.app" $systemAppPath -Force
+            Expand-Archive -Path $systemPkg -DestinationPath temp_system
+            
+            # Find the .app file inside the package
+            $appFile = Get-ChildItem -Path temp_system -Filter "*.app" -Recurse | Select-Object -First 1
+            if ($appFile) {
+                Copy-Item $appFile.FullName ".alpackages\" -Force
+                Write-Host "Downloaded System Application: $($appFile.Name)"
+            } else {
+                Write-Host "Warning: No .app file found in System Application package"
+                Get-ChildItem temp_system -Recurse
+            }
+            
             Remove-Item -Recurse -Force temp_system
-            Remove-Item "$systemAppPath.nupkg" -Force
+            Remove-Item $systemPkg -Force
             $extractEnd = Get-Date
             $extractDuration = ($extractEnd - $extractStart).TotalSeconds
             echo "SYSTEM_EXTRACT_DURATION=$extractDuration" >> $env:GITHUB_ENV
             
             Write-Host "System app download: $downloadDuration seconds"
             Write-Host "System app extract: $extractDuration seconds"
-            Write-Host "Downloaded System Application successfully"
         } catch {
             Write-Host "Warning: Could not download System Application: $($_.Exception.Message)"
             echo "SYSTEM_DOWNLOAD_DURATION=0" >> $env:GITHUB_ENV
@@ -124,20 +140,32 @@ jobs:
         Write-Host "Downloading Base Application..."
         $baseDownloadStart = Get-Date
         
-        $baseAppUrl = "https://www.nuget.org/api/v2/package/Microsoft.Application.Base/22.0.0"
-        $baseAppPath = ".alpackages\Microsoft_Base Application_22.0.0.0.app"
+        # Download Base Application from NuGet v3 API
+        $baseUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.application.base/22.0.0/microsoft.application.base.22.0.0.nupkg"
+        $basePkg = "temp_base.nupkg"
+        
         try {
             $downloadStart = Get-Date
-            Invoke-WebRequest -Uri $baseAppUrl -OutFile "$baseAppPath.nupkg" -UseBasicParsing
+            Invoke-WebRequest -Uri $baseUrl -OutFile $basePkg -UseBasicParsing
             $downloadEnd = Get-Date
             $downloadDuration = ($downloadEnd - $downloadStart).TotalSeconds
             echo "BASE_DOWNLOAD_DURATION=$downloadDuration" >> $env:GITHUB_ENV
             
             $extractStart = Get-Date
-            Expand-Archive -Path "$baseAppPath.nupkg" -DestinationPath temp_base
-            Copy-Item "temp_base\app\Microsoft_Base Application_22.0.0.0.app" $baseAppPath -Force
+            Expand-Archive -Path $basePkg -DestinationPath temp_base
+            
+            # Find the .app file inside the package
+            $appFile = Get-ChildItem -Path temp_base -Filter "*.app" -Recurse | Select-Object -First 1
+            if ($appFile) {
+                Copy-Item $appFile.FullName ".alpackages\" -Force
+                Write-Host "Downloaded Base Application: $($appFile.Name)"
+            } else {
+                Write-Host "Warning: No .app file found in Base Application package"
+                Get-ChildItem temp_base -Recurse
+            }
+            
             Remove-Item -Recurse -Force temp_base
-            Remove-Item "$baseAppPath.nupkg" -Force
+            Remove-Item $basePkg -Force
             $extractEnd = Get-Date
             $extractDuration = ($extractEnd - $extractStart).TotalSeconds
             echo "BASE_EXTRACT_DURATION=$extractDuration" >> $env:GITHUB_ENV
@@ -149,6 +177,32 @@ jobs:
             Write-Host "Warning: Could not download Base Application: $($_.Exception.Message)"
             echo "BASE_DOWNLOAD_DURATION=0" >> $env:GITHUB_ENV
             echo "BASE_EXTRACT_DURATION=0" >> $env:GITHUB_ENV
+        }
+        
+    - name: Download Application Package
+      shell: powershell
+      run: |
+        Write-Host "Downloading Application Package..."
+        
+        # Download Application package that compiler is looking for
+        $appUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.application/22.0.0/microsoft.application.22.0.0.nupkg"
+        $appPkg = "temp_app.nupkg"
+        
+        try {
+            Invoke-WebRequest -Uri $appUrl -OutFile $appPkg -UseBasicParsing
+            Expand-Archive -Path $appPkg -DestinationPath temp_app
+            
+            # Find the .app file inside the package
+            $appFile = Get-ChildItem -Path temp_app -Filter "*.app" -Recurse | Select-Object -First 1
+            if ($appFile) {
+                Copy-Item $appFile.FullName ".alpackages\" -Force
+                Write-Host "Downloaded Application: $($appFile.Name)"
+            }
+            
+            Remove-Item -Recurse -Force temp_app
+            Remove-Item $appPkg -Force
+        } catch {
+            Write-Host "Warning: Could not download Application package: $($_.Exception.Message)"
         }
         
     - name: Calculate total dependency time

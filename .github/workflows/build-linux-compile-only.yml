@@ -96,23 +96,31 @@ jobs:
         echo "Downloading System Application..."
         SYS_DOWNLOAD_START=$(date +%s.%N)
         
-        SYSTEM_APP_URL="https://www.nuget.org/api/v2/package/Microsoft.Application.System/22.0.0"
-        SYSTEM_APP_PATH=".alpackages/Microsoft_System_22.0.0.0.app"
+        # Download System Application from NuGet
+        SYSTEM_URL="https://api.nuget.org/v3-flatcontainer/microsoft.application.system/22.0.0/microsoft.application.system.22.0.0.nupkg"
+        SYSTEM_PKG="temp_system.nupkg"
         
         DOWNLOAD_START=$(date +%s.%N)
-        if wget -q "$SYSTEM_APP_URL" -O "${SYSTEM_APP_PATH}.nupkg"; then
+        if curl -L -s -o "$SYSTEM_PKG" "$SYSTEM_URL"; then
             DOWNLOAD_END=$(date +%s.%N)
             SYSTEM_DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l)
             echo "SYSTEM_DOWNLOAD_DURATION=$SYSTEM_DOWNLOAD_DURATION" >> $GITHUB_ENV
             
             EXTRACT_START=$(date +%s.%N)
             mkdir -p temp_system
-            unzip -q "${SYSTEM_APP_PATH}.nupkg" -d temp_system
-            if [ -f "temp_system/app/Microsoft_System_22.0.0.0.app" ]; then
-                cp "temp_system/app/Microsoft_System_22.0.0.0.app" "$SYSTEM_APP_PATH"
-                echo "Downloaded System Application"
+            unzip -q "$SYSTEM_PKG" -d temp_system
+            
+            # Find the .app file inside the package
+            APP_FILE=$(find temp_system -name "*.app" -type f | head -n 1)
+            if [ -n "$APP_FILE" ] && [ -f "$APP_FILE" ]; then
+                cp "$APP_FILE" ".alpackages/"
+                echo "Downloaded System Application: $(basename "$APP_FILE")"
+            else
+                echo "Warning: No .app file found in System Application package"
+                ls -la temp_system/
             fi
-            rm -rf temp_system "${SYSTEM_APP_PATH}.nupkg"
+            
+            rm -rf temp_system "$SYSTEM_PKG"
             EXTRACT_END=$(date +%s.%N)
             SYSTEM_EXTRACT_DURATION=$(echo "$EXTRACT_END - $EXTRACT_START" | bc -l)
             echo "SYSTEM_EXTRACT_DURATION=$SYSTEM_EXTRACT_DURATION" >> $GITHUB_ENV
@@ -120,33 +128,42 @@ jobs:
             echo "System app download: $SYSTEM_DOWNLOAD_DURATION seconds"
             echo "System app extract: $SYSTEM_EXTRACT_DURATION seconds"
         else
-            echo "Warning: Could not download System Application"
+            echo "Error: Could not download System Application"
             echo "SYSTEM_DOWNLOAD_DURATION=0" >> $GITHUB_ENV
             echo "SYSTEM_EXTRACT_DURATION=0" >> $GITHUB_ENV
+            exit 1
         fi
         
-    - name: Download Base Application
+    - name: Download Base Application  
       run: |
         echo "Downloading Base Application..."
         BASE_DOWNLOAD_START=$(date +%s.%N)
         
-        BASE_APP_URL="https://www.nuget.org/api/v2/package/Microsoft.Application.Base/22.0.0"
-        BASE_APP_PATH=".alpackages/Microsoft_Base Application_22.0.0.0.app"
+        # Download Base Application from NuGet
+        BASE_URL="https://api.nuget.org/v3-flatcontainer/microsoft.application.base/22.0.0/microsoft.application.base.22.0.0.nupkg"
+        BASE_PKG="temp_base.nupkg"
         
         DOWNLOAD_START=$(date +%s.%N)
-        if wget -q "$BASE_APP_URL" -O "${BASE_APP_PATH}.nupkg"; then
+        if curl -L -s -o "$BASE_PKG" "$BASE_URL"; then
             DOWNLOAD_END=$(date +%s.%N)
             BASE_DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l)
             echo "BASE_DOWNLOAD_DURATION=$BASE_DOWNLOAD_DURATION" >> $GITHUB_ENV
             
             EXTRACT_START=$(date +%s.%N)
             mkdir -p temp_base
-            unzip -q "${BASE_APP_PATH}.nupkg" -d temp_base
-            if [ -f "temp_base/app/Microsoft_Base Application_22.0.0.0.app" ]; then
-                cp "temp_base/app/Microsoft_Base Application_22.0.0.0.app" "$BASE_APP_PATH"
-                echo "Downloaded Base Application"
+            unzip -q "$BASE_PKG" -d temp_base
+            
+            # Find the .app file inside the package
+            APP_FILE=$(find temp_base -name "*.app" -type f | head -n 1)
+            if [ -n "$APP_FILE" ] && [ -f "$APP_FILE" ]; then
+                cp "$APP_FILE" ".alpackages/"
+                echo "Downloaded Base Application: $(basename "$APP_FILE")"
+            else
+                echo "Warning: No .app file found in Base Application package"
+                ls -la temp_base/
             fi
-            rm -rf temp_base "${BASE_APP_PATH}.nupkg"
+            
+            rm -rf temp_base "$BASE_PKG"
             EXTRACT_END=$(date +%s.%N)
             BASE_EXTRACT_DURATION=$(echo "$EXTRACT_END - $EXTRACT_START" | bc -l)
             echo "BASE_EXTRACT_DURATION=$BASE_EXTRACT_DURATION" >> $GITHUB_ENV
@@ -154,9 +171,34 @@ jobs:
             echo "Base app download: $BASE_DOWNLOAD_DURATION seconds"
             echo "Base app extract: $BASE_EXTRACT_DURATION seconds"
         else
-            echo "Warning: Could not download Base Application"
+            echo "Error: Could not download Base Application"
             echo "BASE_DOWNLOAD_DURATION=0" >> $GITHUB_ENV
             echo "BASE_EXTRACT_DURATION=0" >> $GITHUB_ENV
+            exit 1
+        fi
+        
+    - name: Download Application Package
+      run: |
+        echo "Downloading Application Package..."
+        
+        # Download Application package that compiler is looking for
+        APP_URL="https://api.nuget.org/v3-flatcontainer/microsoft.application/22.0.0/microsoft.application.22.0.0.nupkg"
+        APP_PKG="temp_app.nupkg"
+        
+        if curl -L -s -o "$APP_PKG" "$APP_URL"; then
+            mkdir -p temp_app
+            unzip -q "$APP_PKG" -d temp_app
+            
+            # Find the .app file inside the package
+            APP_FILE=$(find temp_app -name "*.app" -type f | head -n 1)
+            if [ -n "$APP_FILE" ] && [ -f "$APP_FILE" ]; then
+                cp "$APP_FILE" ".alpackages/"
+                echo "Downloaded Application: $(basename "$APP_FILE")"
+            fi
+            
+            rm -rf temp_app "$APP_PKG"
+        else
+            echo "Warning: Could not download Application package"
         fi
         
     - name: Calculate total dependency time

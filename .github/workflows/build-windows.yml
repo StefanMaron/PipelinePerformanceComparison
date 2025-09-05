@@ -62,9 +62,14 @@ jobs:
         Write-Host "Verifying installations..."
         Write-Host "Testing AL command..."
         try {
-            $helpOutput = AL help 2>&1 | Select-Object -First 3
-            Write-Host "AL help output: $($helpOutput -join "`n")"
-            Write-Host "AL command verified successfully"
+            $helpOutput = AL help 2>$null
+            if ($helpOutput -match "altool") {
+                Write-Host "AL command verified successfully (altool found)"
+                Write-Host "AL version: $($helpOutput | Select-Object -First 1)"
+            } else {
+                Write-Host "AL command verification failed: Unexpected output"
+                exit 1
+            }
         } catch {
             Write-Host "AL command verification failed: $($_.Exception.Message)"
             exit 1
