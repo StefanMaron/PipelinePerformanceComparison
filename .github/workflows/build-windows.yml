@@ -61,13 +61,10 @@ jobs:
       run: |
         Write-Host "Verifying installations..."
         Write-Host "Testing AL command..."
-        try {
-            $output = & AL --version 2>&1
-            Write-Host "AL output: $output"
-            Write-Host "AL command verified successfully"
-        } catch {
-            Write-Host "AL command execution completed (output shown above)"
-        }
+        $ErrorActionPreference = "Continue"
+        AL --version
+        $ErrorActionPreference = "Stop"
+        Write-Host "AL command verified successfully"
         Get-Module BcContainerHelper -ListAvailable | Select-Object Name, Version
         Write-Host "Docker version:"
         docker --version

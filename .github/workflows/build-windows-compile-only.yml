@@ -61,9 +61,8 @@ jobs:
         
         # Test AL command directly (AL --version outputs to stderr and returns exit code 1)
         Write-Host "Running AL --version..."
-        $ErrorActionPreference = "SilentlyContinue"
-        $output = AL --version 2>&1
-        Write-Host "AL output: $output"
+        $ErrorActionPreference = "Continue"
+        AL --version
         $ErrorActionPreference = "Stop"
         Write-Host "AL verification completed"
         
@@ -263,7 +262,8 @@ jobs:
         New-Item -ItemType Directory -Path "bin" -Force | Out-Null
         
         try {
-            AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"
+            $binPath = Join-Path (Get-Location) "bin"
+            AL compile /project:"." /packagecachepath:".alpackages" /out:"$binPath"
             $compileResult = $LASTEXITCODE
             
             $compileEnd = Get-Date
