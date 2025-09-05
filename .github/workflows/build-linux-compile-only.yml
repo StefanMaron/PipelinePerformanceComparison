@@ -21,6 +21,11 @@ jobs:
       
     - name: Record start time
       run: |
+        # Function to format bc output to ensure leading zero for decimals
+        format_duration() {
+            echo "$1" | sed 's/^\./0./'
+        }
+        
         START_TIME=$(date -Iseconds)
         START_EPOCH=$(date +%s.%N)
         echo "BUILD_START_TIME=$START_TIME" >> $GITHUB_ENV
@@ -35,7 +40,7 @@ jobs:
     - name: Record .NET setup completion
       run: |
         DOTNET_SETUP_END=$(date +%s.%N)
-        DOTNET_SETUP_DURATION=$(echo "$DOTNET_SETUP_END - $BUILD_START_EPOCH" | bc -l)
+        DOTNET_SETUP_DURATION=$(echo "$DOTNET_SETUP_END - $BUILD_START_EPOCH" | bc -l | sed 's/^\./0./')
         echo "DOTNET_SETUP_DURATION=$DOTNET_SETUP_DURATION" >> $GITHUB_ENV
         echo ".NET setup took: $DOTNET_SETUP_DURATION seconds"
         
@@ -50,7 +55,7 @@ jobs:
         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
         
         INSTALL_END=$(date +%s.%N)
-        INSTALL_DURATION=$(echo "$INSTALL_END - $INSTALL_START" | bc -l)
+        INSTALL_DURATION=$(echo "$INSTALL_END - $INSTALL_START" | bc -l | sed 's/^\./0./')
         echo "AL_INSTALL_DURATION=$INSTALL_DURATION" >> $GITHUB_ENV
         echo "BC Development Tools for Linux installation took: $INSTALL_DURATION seconds"
         
@@ -63,7 +68,7 @@ jobs:
         AL --version || true
         
         VERIFY_END=$(date +%s.%N)
-        VERIFY_DURATION=$(echo "$VERIFY_END - $VERIFY_START" | bc -l)
+        VERIFY_DURATION=$(echo "$VERIFY_END - $VERIFY_START" | bc -l | sed 's/^\./0./')
         echo "AL_VERIFY_DURATION=$VERIFY_DURATION" >> $GITHUB_ENV
         echo "BC Development Tools verification took: $VERIFY_DURATION seconds"
         
@@ -72,7 +77,7 @@ jobs:
         DIR_START=$(date +%s.%N)
         mkdir -p .alpackages
         DIR_END=$(date +%s.%N)
-        DIR_DURATION=$(echo "$DIR_END - $DIR_START" | bc -l)
+        DIR_DURATION=$(echo "$DIR_END - $DIR_START" | bc -l | sed 's/^\./0./')
         echo "DIR_CREATION_DURATION=$DIR_DURATION" >> $GITHUB_ENV
         echo "Directory creation took: $DIR_DURATION seconds"
         
@@ -132,7 +137,7 @@ jobs:
         rm -rf temp_packages
         
         DOWNLOAD_END=$(date +%s.%N)
-        DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l)
+        DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l | sed 's/^\./0./')
         echo "SYSTEM_DOWNLOAD_DURATION=$DOWNLOAD_DURATION" >> $GITHUB_ENV
         echo "SYSTEM_EXTRACT_DURATION=0" >> $GITHUB_ENV
         echo "BC symbols download took: $DOWNLOAD_DURATION seconds"
@@ -146,7 +151,7 @@ jobs:
         # Calculate total time for BC symbol downloads
         echo "BASE_DOWNLOAD_DURATION=0" >> $GITHUB_ENV
         echo "BASE_EXTRACT_DURATION=0" >> $GITHUB_ENV
-        TOTAL_DEP_TIME=$(echo "$SYSTEM_DOWNLOAD_DURATION + $SYSTEM_EXTRACT_DURATION" | bc -l)
+        TOTAL_DEP_TIME=$(echo "$SYSTEM_DOWNLOAD_DURATION + $SYSTEM_EXTRACT_DURATION" | bc -l | sed 's/^\./0./')
         echo "TOTAL_DEPENDENCY_DURATION=$TOTAL_DEP_TIME" >> $GITHUB_ENV
         echo "Total dependency handling: $TOTAL_DEP_TIME seconds"
         
@@ -155,7 +160,7 @@ jobs:
         SETUP_START=$(date +%s.%N)
         mkdir -p bin
         SETUP_END=$(date +%s.%N)
-        SETUP_DURATION=$(echo "$SETUP_END - $SETUP_START" | bc -l)
+        SETUP_DURATION=$(echo "$SETUP_END - $SETUP_START" | bc -l | sed 's/^\./0./')
         echo "PRECOMPILE_SETUP_DURATION=$SETUP_DURATION" >> $GITHUB_ENV
         echo "Pre-compilation setup: $SETUP_DURATION seconds"
         
@@ -167,7 +172,7 @@ jobs:
         # Try compilation without specifying output directory (AL should create default output)
         if AL compile /project:"." /packagecachepath:".alpackages"; then
             COMPILE_END=$(date +%s.%N)
-            COMPILE_DURATION=$(echo "$COMPILE_END - $COMPILE_START" | bc -l)
+            COMPILE_DURATION=$(echo "$COMPILE_END - $COMPILE_START" | bc -l | sed 's/^\./0./')
             echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV
             echo "Compilation took: $COMPILE_DURATION seconds"
             echo "Compilation successful"
@@ -188,7 +193,7 @@ jobs:
             
             find bin -type f -name "*.app" | while read file; do
                 SIZE_BYTES=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
-                SIZE_KB=$(echo "scale=2; $SIZE_BYTES / 1024" | bc -l)
+                SIZE_KB=$(echo "scale=2; $SIZE_BYTES / 1024" | bc -l | sed 's/^\./0./')
                 echo "  $(basename "$file") - ${SIZE_KB} KB"
             done
             
@@ -196,7 +201,7 @@ jobs:
             APP_COUNT=$(find bin -type f -name "*.app" | wc -l)
             if [ "$APP_COUNT" -gt 0 ]; then
                 TOTAL_SIZE_BYTES=$(find bin -type f -name "*.app" -exec stat -f%z {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || find bin -type f -name "*.app" -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo "0")
-                TOTAL_SIZE_KB=$(echo "scale=2; $TOTAL_SIZE_BYTES / 1024" | bc -l)
+                TOTAL_SIZE_KB=$(echo "scale=2; $TOTAL_SIZE_BYTES / 1024" | bc -l | sed 's/^\./0./')
                 echo "APP_COUNT=$APP_COUNT" >> $GITHUB_ENV
                 echo "TOTAL_APP_SIZE_KB=$TOTAL_SIZE_KB" >> $GITHUB_ENV
                 echo "Total app size: ${TOTAL_SIZE_KB} KB"
@@ -204,7 +209,7 @@ jobs:
         fi
         
         ANALYSIS_END=$(date +%s.%N)
-        ANALYSIS_DURATION=$(echo "$ANALYSIS_END - $ANALYSIS_START" | bc -l)
+        ANALYSIS_DURATION=$(echo "$ANALYSIS_END - $ANALYSIS_START" | bc -l | sed 's/^\./0./')
         echo "POST_COMPILE_ANALYSIS_DURATION=$ANALYSIS_DURATION" >> $GITHUB_ENV
         echo "Post-compilation analysis: $ANALYSIS_DURATION seconds"
         
@@ -231,7 +236,7 @@ jobs:
         fi
         
         TEST_END=$(date +%s.%N)
-        TEST_DURATION=$(echo "$TEST_END - $TEST_START" | bc -l)
+        TEST_DURATION=$(echo "$TEST_END - $TEST_START" | bc -l | sed 's/^\./0./')
         echo "TEST_DURATION=$TEST_DURATION" >> $GITHUB_ENV
         echo "Mock testing took: $TEST_DURATION seconds"
         
@@ -239,7 +244,7 @@ jobs:
       run: |
         END_TIME=$(date -Iseconds)
         END_EPOCH=$(date +%s.%N)
-        TOTAL_DURATION=$(echo "$END_EPOCH - $BUILD_START_EPOCH" | bc -l)
+        TOTAL_DURATION=$(echo "$END_EPOCH - $BUILD_START_EPOCH" | bc -l | sed 's/^\./0./')
         
         echo "=== LINUX COMPILE-ONLY BUILD PERFORMANCE SUMMARY ==="
         echo "Build Start Time: $BUILD_START_TIME"

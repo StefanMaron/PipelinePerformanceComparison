@@ -8,9 +8,9 @@ class PerformanceAnalyzer {
 
     loadMetrics() {
         const metricFiles = [
-            { key: 'windows-bc-container', path: './windows-bc-container-artifacts/windows-bc-container-metrics.json', rawPath: './windows-bc-container-artifacts/windows-bc-container-raw-measurements.json' },
-            { key: 'windows-compile-only', path: './windows-compile-only-artifacts/windows-compile-only-metrics.json', rawPath: './windows-compile-only-artifacts/windows-raw-measurements.json' },
-            { key: 'linux-compile-only', path: './linux-compile-only-artifacts/linux-compile-only-metrics.json', rawPath: './linux-compile-only-artifacts/linux-raw-measurements.json' }
+            { key: 'windows-bc-container', path: '/home/stefan/Downloads/windows-bc-container-artifacts/windows-bc-container-metrics.json', rawPath: '/home/stefan/Downloads/windows-bc-container-artifacts/windows-bc-container-raw-measurements.json' },
+            { key: 'windows-compile-only', path: '/home/stefan/Downloads/windows-compile-only-artifacts/windows-compile-only-metrics.json', rawPath: '/home/stefan/Downloads/windows-compile-only-artifacts/windows-raw-measurements.json' },
+            { key: 'linux-compile-only', path: '/home/stefan/Downloads/linux-compile-only-artifacts/linux-compile-only-metrics.json', rawPath: '/home/stefan/Downloads/linux-compile-only-artifacts/linux-raw-measurements.json' }
         ];
 
         for (const metricFile of metricFiles) {
@@ -88,23 +88,29 @@ class PerformanceAnalyzer {
             report += `✅ **Linux is ${totalImprovement.toFixed(1)}% faster** for compile-only pipelines!\n`;
             report += `⏱️ **Time saved**: ${this.formatDuration(windowsCompile.total_duration - linuxCompile.total_duration)} per build\n\n`;
             
-            // Find biggest improvement
-            let maxImprovement = -Infinity;
+            // Find biggest absolute improvement (excluding total)
+            let maxAbsoluteImprovement = -Infinity;
             let bestStage = '';
+            let bestStageSavings = 0;
             for (const stage of stages) {
+                // Skip total duration to show individual stage improvements
+                if (stage.name.includes('Total Build Time')) continue;
+                
                 const windowsTime = windowsCompile[stage.windowsKey] || 0;
                 const linuxTime = linuxCompile[stage.linuxKey] || 0;
                 if (windowsTime > 0) {
-                    const improvement = ((windowsTime - linuxTime) / windowsTime) * 100;
-                    if (improvement > maxImprovement) {
-                        maxImprovement = improvement;
+                    const absoluteSavings = windowsTime - linuxTime;
+                    if (absoluteSavings > maxAbsoluteImprovement) {
+                        maxAbsoluteImprovement = absoluteSavings;
                         bestStage = stage.name.replace(/\*\*/g, '');
+                        bestStageSavings = absoluteSavings;
                     }
                 }
             }
             
-            if (maxImprovement > 0) {
-                report += `🏆 **Biggest improvement**: ${bestStage} (${maxImprovement.toFixed(1)}% faster on Linux)\n`;
+            if (maxAbsoluteImprovement > 0) {
+                const percentageImprovement = ((bestStageSavings / (bestStageSavings + linuxCompile[stages.find(s => s.name.replace(/\*\*/g, '') === bestStage)?.linuxKey] || 0)) * 100);
+                report += `🏆 **Biggest improvement**: ${bestStage} (${this.formatDuration(bestStageSavings)} saved, ${percentageImprovement.toFixed(1)}% faster on Linux)\n`;
             }
         } else {
             report += `⚠️ Windows is ${Math.abs(totalImprovement).toFixed(1)}% faster than Linux for compilation\n`;
