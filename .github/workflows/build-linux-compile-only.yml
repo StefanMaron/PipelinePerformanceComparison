@@ -107,11 +107,11 @@ jobs:
         curl -L -s -o "temp_packages/microsoft.businessfoundation.us.symbols.nupkg" \
              "$BC_BASE_URL/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$BC_VERSION/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$BC_VERSION.nupkg" || echo "Failed to download Business Foundation"
         
-        # Note: SystemApplication is already downloaded above, but we need a different version for second-level dependency
-        SYSTEM_VERSION="26.0.30643.38226"
-        echo "Downloading Microsoft.SystemApplication.US.symbols v$SYSTEM_VERSION (second-level dependency)..."
-        curl -L -s -o "temp_packages/microsoft.systemapplication.us.symbols.26.0.nupkg" \
-             "$BC_BASE_URL/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$SYSTEM_VERSION/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$SYSTEM_VERSION.nupkg" || echo "Failed to download System Application v26.0"
+        # The actual System package (not SystemApplication)
+        PLATFORM_VERSION="26.0.38176"
+        echo "Downloading Microsoft.Platform.symbols v$PLATFORM_VERSION (System dependency)..."
+        curl -L -s -o "temp_packages/microsoft.platform.symbols.nupkg" \
+             "$BC_BASE_URL/microsoft.platform.symbols/$PLATFORM_VERSION/microsoft.platform.symbols.$PLATFORM_VERSION.nupkg" || echo "Failed to download Platform (System)"
         
         # Extract .nupkg files (which are zip files)
         mkdir -p temp_packages/extracted

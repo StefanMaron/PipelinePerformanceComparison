@@ -59,13 +59,10 @@ jobs:
         Write-Host "Verifying BC Development Tools installation..."
         $verifyStart = Get-Date
         
-        # Test AL command directly (ignore exit code since AL --version returns 1)  
-        try {
-            AL --version
-        } catch {
-            # AL --version returns exit code 1 but still shows version info
-            Write-Host "AL command completed (version shown above)"
-        }
+        # Test AL command directly (ignore exit code since AL --version returns 1)
+        $ErrorActionPreference = "Continue"
+        AL --version
+        $ErrorActionPreference = "Stop"
         
         $verifyEnd = Get-Date
         $verifyDuration = ($verifyEnd - $verifyStart).TotalSeconds
@@ -114,10 +111,10 @@ jobs:
             Write-Host "Downloading Microsoft.BusinessFoundation.US.symbols (second-level dependency)..."
             Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$bcVersion/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$bcVersion.nupkg" -OutFile "temp_packages\microsoft.businessfoundation.us.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
             
-            # Note: SystemApplication is already downloaded above, but we need a different version for second-level dependency
-            $systemVersion = "26.0.30643.38226"
-            Write-Host "Downloading Microsoft.SystemApplication.US.symbols v$systemVersion (second-level dependency)..."
-            Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$systemVersion/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$systemVersion.nupkg" -OutFile "temp_packages\microsoft.systemapplication.us.symbols.26.0.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+            # The actual System package (not SystemApplication)
+            $platformVersion = "26.0.38176"
+            Write-Host "Downloading Microsoft.Platform.symbols v$platformVersion (System dependency)..."
+            Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.platform.symbols/$platformVersion/microsoft.platform.symbols.$platformVersion.nupkg" -OutFile "temp_packages\microsoft.platform.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
             
             # Extract .nupkg files (which are zip files)
             Get-ChildItem -Path temp_packages -Filter "*.nupkg" | ForEach-Object {
