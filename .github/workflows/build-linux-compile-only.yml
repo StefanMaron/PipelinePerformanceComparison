@@ -164,6 +164,10 @@ jobs:
         echo "Compiling AL extension..."
         COMPILE_START=$(date +%s.%N)
         
+        # Create bin directory with proper permissions
+        mkdir -p bin
+        chmod 755 bin
+        
         # Use AL command directly
         if AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"; then
             COMPILE_END=$(date +%s.%N)
