@@ -124,14 +124,19 @@ jobs:
             Write-Host "Downloading Microsoft.Platform.symbols v$platformVersion (System dependency)..."
             Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.platform.symbols/$platformVersion/microsoft.platform.symbols.$platformVersion.nupkg" -OutFile "temp_packages\microsoft.platform.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
             
-            # Extract .nupkg files (which are zip files)
+            # Extract .nupkg files (which are zip files) - rename to .zip first for PowerShell
             Get-ChildItem -Path temp_packages -Filter "*.nupkg" | ForEach-Object {
                 if ($_.Length -gt 0) {
                     Write-Host "Extracting $($_.Name)..."
                     $extractPath = "temp_packages\extracted\$($_.BaseName)"
                     New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
                     try {
-                        Expand-Archive -Path $_.FullName -DestinationPath $extractPath -Force
+                        # Rename .nupkg to .zip for PowerShell Expand-Archive
+                        $zipFile = $_.FullName -replace '\.nupkg$', '.zip'
+                        Rename-Item $_.FullName $zipFile
+                        Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+                        # Rename back for consistency
+                        Rename-Item $zipFile $_.FullName
                     } catch {
                         Write-Host "Failed to extract $($_.Name): $($_.Exception.Message)"
                     }
