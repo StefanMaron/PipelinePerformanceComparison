@@ -99,21 +99,29 @@ jobs:
         # Microsoft BC Symbols NuGet feed
         BC_FEED="https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json"
         
-        # Install nuget CLI for package downloads
-        sudo apt-get update -qq
-        sudo apt-get install -y nuget
+        # Download packages directly from the Microsoft feed
+        mkdir -p temp_packages
         
-        # Download System Application symbols
         echo "Downloading Microsoft.Application.System..."
-        nuget install Microsoft.Application.System -Version 22.0.0 -Source "$BC_FEED" -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
+        curl -L -s -o "temp_packages/microsoft.application.system.22.0.0.nupkg" \
+             "${BC_FEED%/*}/microsoft.application.system/22.0.0/microsoft.application.system.22.0.0.nupkg" || echo "Failed to download System Application"
         
-        # Download Base Application symbols  
         echo "Downloading Microsoft.Application.Base..."
-        nuget install Microsoft.Application.Base -Version 22.0.0 -Source "$BC_FEED" -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
+        curl -L -s -o "temp_packages/microsoft.application.base.22.0.0.nupkg" \
+             "${BC_FEED%/*}/microsoft.application.base/22.0.0/microsoft.application.base.22.0.0.nupkg" || echo "Failed to download Base Application"
         
-        # Download Application symbols
-        echo "Downloading Microsoft.Application..."  
-        nuget install Microsoft.Application -Version 22.0.0 -Source "$BC_FEED" -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
+        echo "Downloading Microsoft.Application..."
+        curl -L -s -o "temp_packages/microsoft.application.22.0.0.nupkg" \
+             "${BC_FEED%/*}/microsoft.application/22.0.0/microsoft.application.22.0.0.nupkg" || echo "Failed to download Application"
+        
+        # Extract .nupkg files and find .app files
+        for nupkg in temp_packages/*.nupkg; do
+            if [ -f "$nupkg" ]; then
+                echo "Extracting $nupkg..."
+                mkdir -p "$(dirname "$nupkg")/extracted/$(basename "$nupkg" .nupkg)"
+                unzip -q "$nupkg" -d "$(dirname "$nupkg")/extracted/$(basename "$nupkg" .nupkg)" || echo "Failed to extract $nupkg"
+            fi
+        done
         
         # Extract .app files from downloaded packages
         find temp_packages -name "*.app" -type f -exec cp {} .alpackages/ \;

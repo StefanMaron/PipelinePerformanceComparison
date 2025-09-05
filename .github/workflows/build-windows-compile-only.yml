@@ -60,12 +60,14 @@ jobs:
         $verifyStart = Get-Date
         Write-Host "Verifying AL command is available..."
         try {
-            $helpOutput = AL help 2>$null
-            if ($helpOutput -match "altool") {
+            $helpOutput = AL help 2>&1
+            $helpText = $helpOutput -join "`n"
+            if ($helpText -match "altool") {
                 Write-Host "AL command verified successfully (altool found)"
-                Write-Host "AL version: $($helpOutput | Select-Object -First 1)"
+                Write-Host "AL version: $($helpOutput[0])"
             } else {
-                Write-Host "AL command verification failed: Unexpected output"
+                Write-Host "AL command verification failed. Output was:"
+                Write-Host $helpText
                 exit 1
             }
         } catch {
@@ -100,17 +102,35 @@ jobs:
         $bcFeed = "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json"
         
         try {
+            # Download packages directly from the Microsoft feed
+            New-Item -ItemType Directory -Path temp_packages -Force | Out-Null
+            
             # Download System Application symbols
             Write-Host "Downloading Microsoft.Application.System..."
-            nuget install Microsoft.Application.System -Version 22.0.0 -Source $bcFeed -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
+            $systemUrl = $bcFeed -replace "/nuget/v3/index.json", "/nuget/v3/flatcontainer/microsoft.application.system/22.0.0/microsoft.application.system.22.0.0.nupkg"
+            Invoke-WebRequest -Uri $systemUrl -OutFile "temp_packages\microsoft.application.system.22.0.0.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
             
             # Download Base Application symbols  
             Write-Host "Downloading Microsoft.Application.Base..."
-            nuget install Microsoft.Application.Base -Version 22.0.0 -Source $bcFeed -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
+            $baseUrl = $bcFeed -replace "/nuget/v3/index.json", "/nuget/v3/flatcontainer/microsoft.application.base/22.0.0/microsoft.application.base.22.0.0.nupkg"
+            Invoke-WebRequest -Uri $baseUrl -OutFile "temp_packages\microsoft.application.base.22.0.0.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
             
             # Download Application symbols
             Write-Host "Downloading Microsoft.Application..."
-            nuget install Microsoft.Application -Version 22.0.0 -Source $bcFeed -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
+            $appUrl = $bcFeed -replace "/nuget/v3/index.json", "/nuget/v3/flatcontainer/microsoft.application/22.0.0/microsoft.application.22.0.0.nupkg"
+            Invoke-WebRequest -Uri $appUrl -OutFile "temp_packages\microsoft.application.22.0.0.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+            
+            # Extract .nupkg files and find .app files
+            Get-ChildItem -Path temp_packages -Filter "*.nupkg" | ForEach-Object {
+                Write-Host "Extracting $($_.Name)..."
+                $extractPath = "temp_packages\extracted\$($_.BaseName)"
+                New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+                try {
+                    Expand-Archive -Path $_.FullName -DestinationPath $extractPath -Force
+                } catch {
+                    Write-Host "Failed to extract $($_.Name): $($_.Exception.Message)"
+                }
+            }
             
             # Extract .app files from downloaded packages
             Get-ChildItem -Path temp_packages -Filter "*.app" -Recurse | ForEach-Object {
