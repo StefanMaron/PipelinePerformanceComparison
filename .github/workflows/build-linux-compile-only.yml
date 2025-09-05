@@ -91,119 +91,52 @@ jobs:
         echo "DIR_CREATION_DURATION=$DIR_DURATION" >> $GITHUB_ENV
         echo "Directory creation took: $DIR_DURATION seconds"
         
-    - name: Download System Application
+    - name: Download BC Symbol Packages
       run: |
-        echo "Downloading System Application..."
-        SYS_DOWNLOAD_START=$(date +%s.%N)
-        
-        # Download System Application from NuGet
-        SYSTEM_URL="https://api.nuget.org/v3-flatcontainer/microsoft.application.system/22.0.0/microsoft.application.system.22.0.0.nupkg"
-        SYSTEM_PKG="temp_system.nupkg"
-        
+        echo "Downloading Business Central symbol packages from Microsoft feed..."
         DOWNLOAD_START=$(date +%s.%N)
-        if curl -L -s -o "$SYSTEM_PKG" "$SYSTEM_URL"; then
-            DOWNLOAD_END=$(date +%s.%N)
-            SYSTEM_DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l)
-            echo "SYSTEM_DOWNLOAD_DURATION=$SYSTEM_DOWNLOAD_DURATION" >> $GITHUB_ENV
-            
-            EXTRACT_START=$(date +%s.%N)
-            mkdir -p temp_system
-            unzip -q "$SYSTEM_PKG" -d temp_system
-            
-            # Find the .app file inside the package
-            APP_FILE=$(find temp_system -name "*.app" -type f | head -n 1)
-            if [ -n "$APP_FILE" ] && [ -f "$APP_FILE" ]; then
-                cp "$APP_FILE" ".alpackages/"
-                echo "Downloaded System Application: $(basename "$APP_FILE")"
-            else
-                echo "Warning: No .app file found in System Application package"
-                ls -la temp_system/
-            fi
-            
-            rm -rf temp_system "$SYSTEM_PKG"
-            EXTRACT_END=$(date +%s.%N)
-            SYSTEM_EXTRACT_DURATION=$(echo "$EXTRACT_END - $EXTRACT_START" | bc -l)
-            echo "SYSTEM_EXTRACT_DURATION=$SYSTEM_EXTRACT_DURATION" >> $GITHUB_ENV
-            
-            echo "System app download: $SYSTEM_DOWNLOAD_DURATION seconds"
-            echo "System app extract: $SYSTEM_EXTRACT_DURATION seconds"
-        else
-            echo "Error: Could not download System Application"
-            echo "SYSTEM_DOWNLOAD_DURATION=0" >> $GITHUB_ENV
-            echo "SYSTEM_EXTRACT_DURATION=0" >> $GITHUB_ENV
-            exit 1
-        fi
         
-    - name: Download Base Application  
-      run: |
-        echo "Downloading Base Application..."
-        BASE_DOWNLOAD_START=$(date +%s.%N)
+        # Microsoft BC Symbols NuGet feed
+        BC_FEED="https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json"
         
-        # Download Base Application from NuGet
-        BASE_URL="https://api.nuget.org/v3-flatcontainer/microsoft.application.base/22.0.0/microsoft.application.base.22.0.0.nupkg"
-        BASE_PKG="temp_base.nupkg"
+        # Install nuget CLI for package downloads
+        sudo apt-get update -qq
+        sudo apt-get install -y nuget
         
-        DOWNLOAD_START=$(date +%s.%N)
-        if curl -L -s -o "$BASE_PKG" "$BASE_URL"; then
-            DOWNLOAD_END=$(date +%s.%N)
-            BASE_DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l)
-            echo "BASE_DOWNLOAD_DURATION=$BASE_DOWNLOAD_DURATION" >> $GITHUB_ENV
-            
-            EXTRACT_START=$(date +%s.%N)
-            mkdir -p temp_base
-            unzip -q "$BASE_PKG" -d temp_base
-            
-            # Find the .app file inside the package
-            APP_FILE=$(find temp_base -name "*.app" -type f | head -n 1)
-            if [ -n "$APP_FILE" ] && [ -f "$APP_FILE" ]; then
-                cp "$APP_FILE" ".alpackages/"
-                echo "Downloaded Base Application: $(basename "$APP_FILE")"
-            else
-                echo "Warning: No .app file found in Base Application package"
-                ls -la temp_base/
-            fi
-            
-            rm -rf temp_base "$BASE_PKG"
-            EXTRACT_END=$(date +%s.%N)
-            BASE_EXTRACT_DURATION=$(echo "$EXTRACT_END - $EXTRACT_START" | bc -l)
-            echo "BASE_EXTRACT_DURATION=$BASE_EXTRACT_DURATION" >> $GITHUB_ENV
-            
-            echo "Base app download: $BASE_DOWNLOAD_DURATION seconds"
-            echo "Base app extract: $BASE_EXTRACT_DURATION seconds"
-        else
-            echo "Error: Could not download Base Application"
-            echo "BASE_DOWNLOAD_DURATION=0" >> $GITHUB_ENV
-            echo "BASE_EXTRACT_DURATION=0" >> $GITHUB_ENV
-            exit 1
-        fi
+        # Download System Application symbols
+        echo "Downloading Microsoft.Application.System..."
+        nuget install Microsoft.Application.System -Version 22.0.0 -Source "$BC_FEED" -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
         
-    - name: Download Application Package
-      run: |
-        echo "Downloading Application Package..."
+        # Download Base Application symbols  
+        echo "Downloading Microsoft.Application.Base..."
+        nuget install Microsoft.Application.Base -Version 22.0.0 -Source "$BC_FEED" -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
         
-        # Download Application package that compiler is looking for
-        APP_URL="https://api.nuget.org/v3-flatcontainer/microsoft.application/22.0.0/microsoft.application.22.0.0.nupkg"
-        APP_PKG="temp_app.nupkg"
+        # Download Application symbols
+        echo "Downloading Microsoft.Application..."  
+        nuget install Microsoft.Application -Version 22.0.0 -Source "$BC_FEED" -OutputDirectory temp_packages -NonInteractive -Verbosity quiet
         
-        if curl -L -s -o "$APP_PKG" "$APP_URL"; then
-            mkdir -p temp_app
-            unzip -q "$APP_PKG" -d temp_app
-            
-            # Find the .app file inside the package
-            APP_FILE=$(find temp_app -name "*.app" -type f | head -n 1)
-            if [ -n "$APP_FILE" ] && [ -f "$APP_FILE" ]; then
-                cp "$APP_FILE" ".alpackages/"
-                echo "Downloaded Application: $(basename "$APP_FILE")"
-            fi
-            
-            rm -rf temp_app "$APP_PKG"
-        else
-            echo "Warning: Could not download Application package"
-        fi
+        # Extract .app files from downloaded packages
+        find temp_packages -name "*.app" -type f -exec cp {} .alpackages/ \;
+        
+        # Clean up temporary files
+        rm -rf temp_packages
+        
+        DOWNLOAD_END=$(date +%s.%N)
+        DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l)
+        echo "SYSTEM_DOWNLOAD_DURATION=$DOWNLOAD_DURATION" >> $GITHUB_ENV
+        echo "SYSTEM_EXTRACT_DURATION=0" >> $GITHUB_ENV
+        echo "BC symbols download took: $DOWNLOAD_DURATION seconds"
+        
+        # List downloaded symbols
+        echo "Downloaded symbol packages:"
+        ls -la .alpackages/
         
     - name: Calculate total dependency time
       run: |
-        TOTAL_DEP_TIME=$(echo "$SYSTEM_DOWNLOAD_DURATION + $SYSTEM_EXTRACT_DURATION + $BASE_DOWNLOAD_DURATION + $BASE_EXTRACT_DURATION" | bc -l)
+        # Calculate total time for BC symbol downloads
+        echo "BASE_DOWNLOAD_DURATION=0" >> $GITHUB_ENV
+        echo "BASE_EXTRACT_DURATION=0" >> $GITHUB_ENV
+        TOTAL_DEP_TIME=$(echo "$SYSTEM_DOWNLOAD_DURATION + $SYSTEM_EXTRACT_DURATION" | bc -l)
         echo "TOTAL_DEPENDENCY_DURATION=$TOTAL_DEP_TIME" >> $GITHUB_ENV
         echo "Total dependency handling: $TOTAL_DEP_TIME seconds"
         
