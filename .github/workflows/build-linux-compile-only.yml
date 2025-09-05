@@ -62,20 +62,14 @@ jobs:
         # Try AL command as documented
         if command -v AL >/dev/null 2>&1; then
             echo "Found AL command (uppercase)"
-            if AL --version >/dev/null 2>&1; then
-                AL --version
-            else
-                echo "AL --version failed, trying AL help"
-                AL help | head -5
-            fi
+            echo "AL help output:"
+            AL help | head -3
+            echo "AL command verified successfully"
         elif [ -f "$HOME/.dotnet/tools/AL" ]; then
             echo "Found AL at $HOME/.dotnet/tools/AL"
-            if $HOME/.dotnet/tools/AL --version >/dev/null 2>&1; then
-                $HOME/.dotnet/tools/AL --version
-            else
-                echo "AL --version failed, trying AL help"
-                $HOME/.dotnet/tools/AL help | head -5
-            fi
+            echo "AL help output:"
+            $HOME/.dotnet/tools/AL help | head -3
+            echo "AL command verified successfully"
         else
             echo "AL command not found in standard locations"
             echo "Available dotnet tools:"
