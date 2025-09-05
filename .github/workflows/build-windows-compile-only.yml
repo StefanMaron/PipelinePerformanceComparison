@@ -58,7 +58,13 @@ jobs:
       run: |
         Write-Host "Verifying BC Development Tools installation..."
         $verifyStart = Get-Date
-        al --version
+        AL --version 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            AL --version
+        } else {
+            Write-Host "AL --version failed, trying AL help"
+            AL help | Select-Object -First 5
+        }
         $verifyEnd = Get-Date
         $verifyDuration = ($verifyEnd - $verifyStart).TotalSeconds
         echo "AL_VERIFY_DURATION=$verifyDuration" >> $env:GITHUB_ENV
@@ -169,7 +175,7 @@ jobs:
         $compileStart = Get-Date
         
         try {
-            al compile /project:"." /packagecachepath:".alpackages" /out:"bin"
+            AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"
             $compileResult = $LASTEXITCODE
             
             $compileEnd = Get-Date

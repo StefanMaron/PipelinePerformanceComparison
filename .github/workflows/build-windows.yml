@@ -60,7 +60,13 @@ jobs:
       shell: powershell
       run: |
         Write-Host "Verifying installations..."
-        al --version
+        AL --version 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            AL --version
+        } else {
+            Write-Host "AL --version failed, trying AL help"
+            AL help | Select-Object -First 5
+        }
         Get-Module BcContainerHelper -ListAvailable | Select-Object Name, Version
         Write-Host "Docker version:"
         docker --version

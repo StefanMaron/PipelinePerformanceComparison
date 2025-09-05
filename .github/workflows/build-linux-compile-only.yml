@@ -44,6 +44,11 @@ jobs:
         echo "Installing BC Development Tools for Linux..."
         INSTALL_START=$(date +%s.%N)
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools.Linux --version 16.0.24.41895-beta
+        
+        # Ensure dotnet tools are in PATH
+        export PATH="$PATH:$HOME/.dotnet/tools"
+        echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+        
         INSTALL_END=$(date +%s.%N)
         INSTALL_DURATION=$(echo "$INSTALL_END - $INSTALL_START" | bc -l)
         echo "AL_INSTALL_DURATION=$INSTALL_DURATION" >> $GITHUB_ENV
@@ -53,7 +58,31 @@ jobs:
       run: |
         echo "Verifying BC Development Tools installation..."
         VERIFY_START=$(date +%s.%N)
-        al --version
+        
+        # Try AL command as documented
+        if command -v AL >/dev/null 2>&1; then
+            echo "Found AL command (uppercase)"
+            if AL --version >/dev/null 2>&1; then
+                AL --version
+            else
+                echo "AL --version failed, trying AL help"
+                AL help | head -5
+            fi
+        elif [ -f "$HOME/.dotnet/tools/AL" ]; then
+            echo "Found AL at $HOME/.dotnet/tools/AL"
+            if $HOME/.dotnet/tools/AL --version >/dev/null 2>&1; then
+                $HOME/.dotnet/tools/AL --version
+            else
+                echo "AL --version failed, trying AL help"
+                $HOME/.dotnet/tools/AL help | head -5
+            fi
+        else
+            echo "AL command not found in standard locations"
+            echo "Available dotnet tools:"
+            dotnet tool list -g
+            exit 1
+        fi
+        
         VERIFY_END=$(date +%s.%N)
         VERIFY_DURATION=$(echo "$VERIFY_END - $VERIFY_START" | bc -l)
         echo "AL_VERIFY_DURATION=$VERIFY_DURATION" >> $GITHUB_ENV
@@ -156,8 +185,19 @@ jobs:
         echo "Compiling AL extension..."
         COMPILE_START=$(date +%s.%N)
         
-        # Compile the extension
-        if al compile /project:"." /packagecachepath:".alpackages" /out:"bin"; then
+        # Use AL command as documented
+        AL_CMD="AL"
+        if command -v AL >/dev/null 2>&1; then
+            AL_CMD="AL"
+        elif [ -f "$HOME/.dotnet/tools/AL" ]; then
+            AL_CMD="$HOME/.dotnet/tools/AL"
+        else
+            echo "AL command not found, cannot compile"
+            exit 1
+        fi
+        
+        echo "Using AL command: $AL_CMD"
+        if $AL_CMD compile /project:"." /packagecachepath:".alpackages" /out:"bin"; then
             COMPILE_END=$(date +%s.%N)
             COMPILE_DURATION=$(echo "$COMPILE_END - $COMPILE_START" | bc -l)
             echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV
