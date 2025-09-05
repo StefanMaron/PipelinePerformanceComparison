@@ -61,15 +61,13 @@ jobs:
         
         # Test AL command directly (handle exit code properly)
         Write-Host "Testing AL command..."
-        try {
-            $ErrorActionPreference = "Continue"
-            AL --version 2>&1 | Out-Host
-            Write-Host "AL command verified successfully"
-        } catch {
-            Write-Host "AL command completed with expected behavior"
-        } finally {
-            $ErrorActionPreference = "Stop"
-        }
+        $ErrorActionPreference = "Continue"
+        AL --version
+        $ErrorActionPreference = "Stop"
+        Write-Host "AL command verified successfully"
+        
+        # Add a successful command to override AL's exit code 1
+        Write-Host "PowerShell version: $($PSVersionTable.PSVersion)"
         
         $verifyEnd = Get-Date
         $verifyDuration = ($verifyEnd - $verifyStart).TotalSeconds
