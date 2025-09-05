@@ -47,9 +47,9 @@ jobs:
         Install-Module -Name BcContainerHelper -Force -AllowClobber
         Import-Module BcContainerHelper -Force
         
-        # Install AL Language Extension
-        Write-Host "Installing AL Language Extension..."
-        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.AlLanguage
+        # Install BC Development Tools
+        Write-Host "Installing BC Development Tools..."
+        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools --version 16.0.24.41895-beta
         
         $installEnd = Get-Date
         $installDuration = ($installEnd - $installStart).TotalSeconds
@@ -60,7 +60,7 @@ jobs:
       shell: powershell
       run: |
         Write-Host "Verifying installations..."
-        AL --version
+        al --version
         Get-Module BcContainerHelper -ListAvailable | Select-Object Name, Version
         Write-Host "Docker version:"
         docker --version

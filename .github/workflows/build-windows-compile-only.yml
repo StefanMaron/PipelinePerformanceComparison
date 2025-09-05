@@ -42,27 +42,27 @@ jobs:
         echo "DOTNET_SETUP_DURATION=$dotnetSetupDuration" >> $env:GITHUB_ENV
         Write-Host ".NET setup took: $dotnetSetupDuration seconds"
         
-    - name: Install AL Language Extension
+    - name: Install BC Development Tools
       shell: powershell
       run: |
-        Write-Host "Installing AL Language Extension..."
+        Write-Host "Installing BC Development Tools..."
         $installStart = Get-Date
-        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.AlLanguage
+        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools --version 16.0.24.41895-beta
         $installEnd = Get-Date
         $installDuration = ($installEnd - $installStart).TotalSeconds
         echo "AL_INSTALL_DURATION=$installDuration" >> $env:GITHUB_ENV
-        Write-Host "AL installation took: $installDuration seconds"
+        Write-Host "BC Development Tools installation took: $installDuration seconds"
         
-    - name: Verify AL installation
+    - name: Verify BC Development Tools installation
       shell: powershell
       run: |
-        Write-Host "Verifying AL installation..."
+        Write-Host "Verifying BC Development Tools installation..."
         $verifyStart = Get-Date
-        AL --version
+        al --version
         $verifyEnd = Get-Date
         $verifyDuration = ($verifyEnd - $verifyStart).TotalSeconds
         echo "AL_VERIFY_DURATION=$verifyDuration" >> $env:GITHUB_ENV
-        Write-Host "AL verification took: $verifyDuration seconds"
+        Write-Host "BC Development Tools verification took: $verifyDuration seconds"
         
     - name: Create dependencies directory
       shell: powershell
@@ -169,7 +169,7 @@ jobs:
         $compileStart = Get-Date
         
         try {
-            AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"
+            al compile /project:"." /packagecachepath:".alpackages" /out:"bin"
             $compileResult = $LASTEXITCODE
             
             $compileEnd = Get-Date

@@ -39,25 +39,25 @@ jobs:
         echo "DOTNET_SETUP_DURATION=$DOTNET_SETUP_DURATION" >> $GITHUB_ENV
         echo ".NET setup took: $DOTNET_SETUP_DURATION seconds"
         
-    - name: Install AL Language Extension
+    - name: Install BC Development Tools for Linux
       run: |
-        echo "Installing AL Language Extension..."
+        echo "Installing BC Development Tools for Linux..."
         INSTALL_START=$(date +%s.%N)
-        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.AlLanguage
+        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools.Linux --version 16.0.24.41895-beta
         INSTALL_END=$(date +%s.%N)
         INSTALL_DURATION=$(echo "$INSTALL_END - $INSTALL_START" | bc -l)
         echo "AL_INSTALL_DURATION=$INSTALL_DURATION" >> $GITHUB_ENV
-        echo "AL installation took: $INSTALL_DURATION seconds"
+        echo "BC Development Tools for Linux installation took: $INSTALL_DURATION seconds"
         
-    - name: Verify AL installation
+    - name: Verify BC Development Tools installation
       run: |
-        echo "Verifying AL installation..."
+        echo "Verifying BC Development Tools installation..."
         VERIFY_START=$(date +%s.%N)
-        AL --version
+        al --version
         VERIFY_END=$(date +%s.%N)
         VERIFY_DURATION=$(echo "$VERIFY_END - $VERIFY_START" | bc -l)
         echo "AL_VERIFY_DURATION=$VERIFY_DURATION" >> $GITHUB_ENV
-        echo "AL verification took: $VERIFY_DURATION seconds"
+        echo "BC Development Tools verification took: $VERIFY_DURATION seconds"
         
     - name: Create dependencies directory
       run: |
@@ -157,7 +157,7 @@ jobs:
         COMPILE_START=$(date +%s.%N)
         
         # Compile the extension
-        if AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"; then
+        if al compile /project:"." /packagecachepath:".alpackages" /out:"bin"; then
             COMPILE_END=$(date +%s.%N)
             COMPILE_DURATION=$(echo "$COMPILE_END - $COMPILE_START" | bc -l)
             echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV
