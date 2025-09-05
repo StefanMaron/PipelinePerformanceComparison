@@ -38,7 +38,6 @@ codeunit 50001 "Sample Data Tests PPC"
     begin
         // Setup - Ensure we have some data
         SampleDataMgmt.GenerateSampleData();
-        SampleDataMgmt.GenerateSampleDataLines();
         if SampleData.Count() = 0 then
             Error('No sample data was generated');
         if SampleLine.Count() = 0 then
@@ -49,7 +48,8 @@ codeunit 50001 "Sample Data Tests PPC"
         // Verify
         if SampleData.Count() <> 0 then
             Error('All sample data should be cleared');
-        Assert.AreEqual(0, SampleLine.Count(), 'All sample lines should be cleared');
+        if SampleLine.Count() <> 0 then
+            Error('All sample lines should be cleared');
     end;
 
     [Test]

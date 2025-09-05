@@ -59,10 +59,14 @@ jobs:
         Write-Host "Verifying BC Development Tools installation..."
         $verifyStart = Get-Date
         
-        # Test AL command directly (ignore exit code since AL --version returns 1)
-        $ErrorActionPreference = "Continue"
-        AL --version
-        $ErrorActionPreference = "Stop"
+        # Test AL command directly (AL --version outputs to stderr and returns exit code 1)
+        Write-Host "Running AL --version..."
+        try {
+            $output = & AL --version 2>&1
+            Write-Host "AL output: $output"
+        } catch {
+            Write-Host "AL command execution completed (output shown above)"
+        }
         
         $verifyEnd = Get-Date
         $verifyDuration = ($verifyEnd - $verifyStart).TotalSeconds
