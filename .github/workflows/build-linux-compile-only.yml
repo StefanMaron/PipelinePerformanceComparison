@@ -168,9 +168,9 @@ jobs:
       run: |
         echo "Compiling AL extension..."
         COMPILE_START=$(date +%s.%N)
-        
-        # Try compilation without specifying output directory (AL should create default output)
-        if AL compile /project:"." /packagecachepath:".alpackages"; then
+
+        # Compile with output directory specified
+        if AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"; then
             COMPILE_END=$(date +%s.%N)
             COMPILE_DURATION=$(echo "$COMPILE_END - $COMPILE_START" | bc -l | sed 's/^\./0./')
             echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV

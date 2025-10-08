@@ -268,24 +268,24 @@ jobs:
       run: |
         Write-Host "Compiling AL extension..."
         $compileStart = Get-Date
-        
+
         try {
-            # Try compilation without specifying output directory (AL should create default output)
-            AL compile /project:"." /packagecachepath:".alpackages"
+            # Compile with output directory specified
+            AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"
             $compileResult = $LASTEXITCODE
-            
+
             $compileEnd = Get-Date
             $compileDuration = ($compileEnd - $compileStart).TotalSeconds
             echo "COMPILE_DURATION=$compileDuration" >> $env:GITHUB_ENV
             Write-Host "Compilation took: $compileDuration seconds"
-            
+
             if ($compileResult -ne 0) {
                 Write-Host "Compilation failed with exit code: $compileResult"
                 exit $compileResult
             }
-            
+
             Write-Host "Compilation successful"
-            
+
         } catch {
             Write-Host "Compilation error: $($_.Exception.Message)"
             exit 1
