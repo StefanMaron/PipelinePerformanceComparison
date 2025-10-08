@@ -548,6 +548,13 @@ jobs:
         echo "Disk: $(df -h . | tail -1 | awk '{print $4}') available"
         echo "Docker: $(docker --version)"
 
+    - name: Save Docker images cache
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: /tmp/docker-images
+        key: docker-images-${{ runner.os }}-${{ hashFiles('.github/workflows/build-linux.yml') }}
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
