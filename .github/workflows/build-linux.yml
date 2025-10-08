@@ -227,11 +227,12 @@ jobs:
         echo "POST_COMPILE_ANALYSIS_DURATION=$ANALYSIS_DURATION" >> $GITHUB_ENV
         echo "Post-compilation analysis: $ANALYSIS_DURATION seconds"
 
-    - name: Cache Docker images
-      uses: actions/cache@v4
+    - name: Restore Docker images cache
+      id: cache-docker
+      uses: actions/cache/restore@v4
       with:
         path: /tmp/docker-images
-        key: docker-images-${{ runner.os }}-${{ env.BC_VERSION }}
+        key: docker-images-${{ runner.os }}-${{ hashFiles('.github/workflows/build-linux.yml') }}
         restore-keys: |
           docker-images-${{ runner.os }}-
 
