@@ -270,8 +270,8 @@ jobs:
         $compileStart = Get-Date
 
         try {
-            # Compile with output directory specified
-            AL compile /project:"." /packagecachepath:".alpackages" /out:"bin"
+            # Try compilation without specifying output directory (AL should create default output)
+            AL compile /project:"." /packagecachepath:".alpackages"
             $compileResult = $LASTEXITCODE
 
             $compileEnd = Get-Date
