@@ -9,7 +9,7 @@ on:
 
 env:
   AL_VERSION: 'latest'
-  BC_VERSION: '26.3.36158.36341'
+  BC_VERSION: '26.3'
   CONTAINER_NAME: 'bcserver'
   
 jobs:
@@ -82,18 +82,19 @@ jobs:
       run: |
         Write-Host "Creating Business Central container..."
         $containerStart = Get-Date
-        
+
         # Set container parameters
         $containerName = $env:CONTAINER_NAME
-        $imageName = "mcr.microsoft.com/businesscentral/onprem:$($env:BC_VERSION)-dev"
-        
-        Write-Host "Pulling BC image: $imageName"
-        docker pull $imageName
-        
-        # Create container with BcContainerHelper
+
+        # Get artifact URL using BcContainerHelper
+        Write-Host "Resolving BC artifact URL for version $($env:BC_VERSION)..."
+        $artifactUrl = Get-BCArtifactUrl -type OnPrem -version $env:BC_VERSION -country w1 -select Latest
+        Write-Host "Using artifact URL: $artifactUrl"
+
+        # Create container with BcContainerHelper using artifact URL
         $containerParams = @{
             containerName = $containerName
-            imageName = $imageName
+            artifactUrl = $artifactUrl
             accept_eula = $true
             auth = 'NavUserPassword'
             includeTestToolkit = $true
@@ -102,11 +103,11 @@ jobs:
             assignPremiumPlan = $true
             memoryLimit = '8G'
             isolation = 'process'
-            useBestContainerOS = $true
+            updateHosts = $true
         }
-        
+
         New-BcContainer @containerParams
-        
+
         $containerEnd = Get-Date
         $containerDuration = ($containerEnd - $containerStart).TotalSeconds
         echo "CONTAINER_CREATION_DURATION=$containerDuration" >> $env:GITHUB_ENV
