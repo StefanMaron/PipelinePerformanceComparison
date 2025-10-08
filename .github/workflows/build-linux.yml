@@ -227,6 +227,28 @@ jobs:
         echo "POST_COMPILE_ANALYSIS_DURATION=$ANALYSIS_DURATION" >> $GITHUB_ENV
         echo "Post-compilation analysis: $ANALYSIS_DURATION seconds"
 
+    - name: Cache Docker images
+      uses: actions/cache@v4
+      with:
+        path: /tmp/docker-images
+        key: docker-images-${{ runner.os }}-${{ env.BC_VERSION }}
+        restore-keys: |
+          docker-images-${{ runner.os }}-
+
+    - name: Load cached Docker images
+      run: |
+        if [ -d "/tmp/docker-images" ] && [ "$(ls -A /tmp/docker-images)" ]; then
+          echo "Loading cached Docker images..."
+          for img in /tmp/docker-images/*.tar; do
+            if [ -f "$img" ]; then
+              echo "Loading $img..."
+              docker load -i "$img"
+            fi
+          done
+        else
+          echo "No cached images found"
+        fi
+
     - name: Setup Docker for BC Container
       run: |
         echo "Setting up Docker environment..."
@@ -270,6 +292,23 @@ jobs:
         echo "Container build took: $CONTAINER_BUILD_DURATION seconds"
 
         cd ..
+
+    - name: Save Docker images to cache
+      run: |
+        mkdir -p /tmp/docker-images
+
+        # Save the BC Wine base image
+        if docker image inspect docker.io/stefanmaronbc/bc-wine-base:latest >/dev/null 2>&1; then
+          echo "Saving bc-wine-base image..."
+          docker save docker.io/stefanmaronbc/bc-wine-base:latest -o /tmp/docker-images/bc-wine-base.tar
+        fi
+
+        # Save SQL Server image (find the exact tag used)
+        SQL_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "mcr.microsoft.com/mssql/server" | head -n1)
+        if [ -n "$SQL_IMAGE" ]; then
+          echo "Saving SQL Server image: $SQL_IMAGE..."
+          docker save "$SQL_IMAGE" -o /tmp/docker-images/mssql-server.tar
+        fi
 
     - name: Start BC Container
       run: |
