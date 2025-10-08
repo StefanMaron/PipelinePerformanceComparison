@@ -1,4 +1,4 @@
-name: Build Linux (Compile Only)
+name: Build Linux (Full Test)
 
 on:
   push:
@@ -9,69 +9,71 @@ on:
 
 env:
   AL_VERSION: 'latest'
-  
+  BCDEV_REPO: 'https://github.com/StefanMaron/BCDevOnLinux.git'
+  BCDEV_BRANCH: 'v2'
+
 jobs:
-  build-linux-compile-only:
+  build-linux-full-test:
     runs-on: ubuntu-latest
-    name: Linux Compile-Only Build
-    
+    name: Linux Full Build and Test
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      
+
     - name: Record start time
       run: |
         # Function to format bc output to ensure leading zero for decimals
         format_duration() {
             echo "$1" | sed 's/^\./0./'
         }
-        
+
         START_TIME=$(date -Iseconds)
         START_EPOCH=$(date +%s.%N)
         echo "BUILD_START_TIME=$START_TIME" >> $GITHUB_ENV
         echo "BUILD_START_EPOCH=$START_EPOCH" >> $GITHUB_ENV
         echo "Build started at: $START_TIME"
-        
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
-        
+
     - name: Record .NET setup completion
       run: |
         DOTNET_SETUP_END=$(date +%s.%N)
         DOTNET_SETUP_DURATION=$(echo "$DOTNET_SETUP_END - $BUILD_START_EPOCH" | bc -l | sed 's/^\./0./')
         echo "DOTNET_SETUP_DURATION=$DOTNET_SETUP_DURATION" >> $GITHUB_ENV
         echo ".NET setup took: $DOTNET_SETUP_DURATION seconds"
-        
+
     - name: Install BC Development Tools for Linux
       run: |
         echo "Installing BC Development Tools for Linux..."
         INSTALL_START=$(date +%s.%N)
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools.Linux --version 16.0.24.41895-beta
-        
+
         # Ensure dotnet tools are in PATH
         export PATH="$PATH:$HOME/.dotnet/tools"
         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
-        
+
         INSTALL_END=$(date +%s.%N)
         INSTALL_DURATION=$(echo "$INSTALL_END - $INSTALL_START" | bc -l | sed 's/^\./0./')
         echo "AL_INSTALL_DURATION=$INSTALL_DURATION" >> $GITHUB_ENV
         echo "BC Development Tools for Linux installation took: $INSTALL_DURATION seconds"
-        
+
     - name: Verify BC Development Tools installation
       run: |
         echo "Verifying BC Development Tools installation..."
         VERIFY_START=$(date +%s.%N)
-        
+
         # Test AL command directly (ignore exit code since AL --version returns 1)
         AL --version || true
-        
+
         VERIFY_END=$(date +%s.%N)
         VERIFY_DURATION=$(echo "$VERIFY_END - $VERIFY_START" | bc -l | sed 's/^\./0./')
         echo "AL_VERIFY_DURATION=$VERIFY_DURATION" >> $GITHUB_ENV
         echo "BC Development Tools verification took: $VERIFY_DURATION seconds"
-        
+
     - name: Create dependencies directory
       run: |
         DIR_START=$(date +%s.%N)
@@ -80,44 +82,44 @@ jobs:
         DIR_DURATION=$(echo "$DIR_END - $DIR_START" | bc -l | sed 's/^\./0./')
         echo "DIR_CREATION_DURATION=$DIR_DURATION" >> $GITHUB_ENV
         echo "Directory creation took: $DIR_DURATION seconds"
-        
+
     - name: Download BC Symbol Packages
       run: |
         echo "Downloading Business Central symbol packages from Microsoft feed..."
         DOWNLOAD_START=$(date +%s.%N)
-        
+
         # Microsoft BC Symbols NuGet feed
         BC_FEED="https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json"
-        
+
         # Download packages directly using the discovered package base URL
         BC_VERSION="26.3.36158.36341"
         BC_BASE_URL="https://dynamicssmb2.pkgs.visualstudio.com/571e802d-b44b-45fc-bd41-4cfddec73b44/_packaging/b656b10c-3de0-440c-900c-bc2e4e86d84c/nuget/v3/flat2"
-        
+
         mkdir -p temp_packages
-        
+
         echo "Downloading Microsoft.SystemApplication.US.symbols..."
         curl -L -s -o "temp_packages/microsoft.systemapplication.us.symbols.nupkg" \
              "$BC_BASE_URL/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$BC_VERSION/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$BC_VERSION.nupkg" || echo "Failed to download System Application"
-        
+
         echo "Downloading Microsoft.BaseApplication.US.symbols..."
         curl -L -s -o "temp_packages/microsoft.baseapplication.us.symbols.nupkg" \
              "$BC_BASE_URL/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972/$BC_VERSION/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972.$BC_VERSION.nupkg" || echo "Failed to download Base Application"
-        
+
         echo "Downloading Microsoft.Application.US.symbols..."
         curl -L -s -o "temp_packages/microsoft.application.us.symbols.nupkg" \
              "$BC_BASE_URL/microsoft.application.us.symbols/$BC_VERSION/microsoft.application.us.symbols.$BC_VERSION.nupkg" || echo "Failed to download Application"
-        
+
         # Second-level dependencies
         echo "Downloading Microsoft.BusinessFoundation.US.symbols (second-level dependency)..."
         curl -L -s -o "temp_packages/microsoft.businessfoundation.us.symbols.nupkg" \
              "$BC_BASE_URL/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$BC_VERSION/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$BC_VERSION.nupkg" || echo "Failed to download Business Foundation"
-        
+
         # The actual System package (not SystemApplication)
         PLATFORM_VERSION="26.0.38176"
         echo "Downloading Microsoft.Platform.symbols v$PLATFORM_VERSION (System dependency)..."
         curl -L -s -o "temp_packages/microsoft.platform.symbols.nupkg" \
              "$BC_BASE_URL/microsoft.platform.symbols/$PLATFORM_VERSION/microsoft.platform.symbols.$PLATFORM_VERSION.nupkg" || echo "Failed to download Platform (System)"
-        
+
         # Extract .nupkg files (which are zip files)
         mkdir -p temp_packages/extracted
         for nupkg in temp_packages/*.nupkg; do
@@ -129,23 +131,23 @@ jobs:
                 echo "Skipping empty or missing file: $(basename "$nupkg")"
             fi
         done
-        
+
         # Extract .app files from downloaded packages
         find temp_packages -name "*.app" -type f -exec cp {} .alpackages/ \;
-        
+
         # Clean up temporary files
         rm -rf temp_packages
-        
+
         DOWNLOAD_END=$(date +%s.%N)
         DOWNLOAD_DURATION=$(echo "$DOWNLOAD_END - $DOWNLOAD_START" | bc -l | sed 's/^\./0./')
         echo "SYSTEM_DOWNLOAD_DURATION=$DOWNLOAD_DURATION" >> $GITHUB_ENV
         echo "SYSTEM_EXTRACT_DURATION=0" >> $GITHUB_ENV
         echo "BC symbols download took: $DOWNLOAD_DURATION seconds"
-        
+
         # List downloaded symbols
         echo "Downloaded symbol packages:"
         ls -la .alpackages/
-        
+
     - name: Calculate total dependency time
       run: |
         # Calculate total time for BC symbol downloads
@@ -154,7 +156,7 @@ jobs:
         TOTAL_DEP_TIME=$(echo "$SYSTEM_DOWNLOAD_DURATION + $SYSTEM_EXTRACT_DURATION" | bc -l | sed 's/^\./0./')
         echo "TOTAL_DEPENDENCY_DURATION=$TOTAL_DEP_TIME" >> $GITHUB_ENV
         echo "Total dependency handling: $TOTAL_DEP_TIME seconds"
-        
+
     - name: Pre-compilation setup
       run: |
         SETUP_START=$(date +%s.%N)
@@ -163,12 +165,12 @@ jobs:
         SETUP_DURATION=$(echo "$SETUP_END - $SETUP_START" | bc -l | sed 's/^\./0./')
         echo "PRECOMPILE_SETUP_DURATION=$SETUP_DURATION" >> $GITHUB_ENV
         echo "Pre-compilation setup: $SETUP_DURATION seconds"
-        
+
     - name: Compile AL Extension
       run: |
         echo "Compiling AL extension..."
         COMPILE_START=$(date +%s.%N)
-        
+
         # Try compilation without specifying output directory (AL should create default output)
         if AL compile /project:"." /packagecachepath:".alpackages"; then
             COMPILE_END=$(date +%s.%N)
@@ -180,73 +182,188 @@ jobs:
             echo "Compilation failed with exit code: $?"
             exit 1
         fi
-        
+
     - name: Post-compilation analysis
       run: |
         ANALYSIS_START=$(date +%s.%N)
-        
+
         # List and analyze compiled files
         if [ -d "bin" ]; then
             echo "Compiled files:"
             APP_COUNT=0
             TOTAL_SIZE_BYTES=0
-            
+
             find bin -type f -name "*.app" | while read file; do
-                SIZE_BYTES=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
+                SIZE_BYTES=$(stat -c%s "$file" 2>/dev/null || echo "0")
                 SIZE_KB=$(echo "scale=2; $SIZE_BYTES / 1024" | bc -l | sed 's/^\./0./')
                 echo "  $(basename "$file") - ${SIZE_KB} KB"
             done
-            
+
             # Count apps and calculate total size
             APP_COUNT=$(find bin -type f -name "*.app" | wc -l)
             if [ "$APP_COUNT" -gt 0 ]; then
-                TOTAL_SIZE_BYTES=$(find bin -type f -name "*.app" -exec stat -f%z {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || find bin -type f -name "*.app" -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo "0")
+                TOTAL_SIZE_BYTES=$(find bin -type f -name "*.app" -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo "0")
                 TOTAL_SIZE_KB=$(echo "scale=2; $TOTAL_SIZE_BYTES / 1024" | bc -l | sed 's/^\./0./')
                 echo "APP_COUNT=$APP_COUNT" >> $GITHUB_ENV
                 echo "TOTAL_APP_SIZE_KB=$TOTAL_SIZE_KB" >> $GITHUB_ENV
                 echo "Total app size: ${TOTAL_SIZE_KB} KB"
             fi
         fi
-        
+
         ANALYSIS_END=$(date +%s.%N)
         ANALYSIS_DURATION=$(echo "$ANALYSIS_END - $ANALYSIS_START" | bc -l | sed 's/^\./0./')
         echo "POST_COMPILE_ANALYSIS_DURATION=$ANALYSIS_DURATION" >> $GITHUB_ENV
         echo "Post-compilation analysis: $ANALYSIS_DURATION seconds"
-        
-    - name: Mock Test Validation
+
+    - name: Setup Docker for BC Container
       run: |
-        echo "Running mock test validation..."
+        echo "Setting up Docker environment..."
+        DOCKER_SETUP_START=$(date +%s.%N)
+
+        # Verify Docker is available
+        docker --version
+        docker compose version
+
+        DOCKER_SETUP_END=$(date +%s.%N)
+        DOCKER_SETUP_DURATION=$(echo "$DOCKER_SETUP_END - $DOCKER_SETUP_START" | bc -l | sed 's/^\./0./')
+        echo "DOCKER_SETUP_DURATION=$DOCKER_SETUP_DURATION" >> $GITHUB_ENV
+        echo "Docker setup took: $DOCKER_SETUP_DURATION seconds"
+
+    - name: Clone BCDevOnLinux repository
+      run: |
+        echo "Cloning BCDevOnLinux repository..."
+        CLONE_START=$(date +%s.%N)
+
+        # Clone the repository to a temporary location
+        git clone --branch ${{ env.BCDEV_BRANCH }} --depth 1 ${{ env.BCDEV_REPO }} bcdev-temp
+
+        CLONE_END=$(date +%s.%N)
+        CLONE_DURATION=$(echo "$CLONE_END - $CLONE_START" | bc -l | sed 's/^\./0./')
+        echo "BCDEV_CLONE_DURATION=$CLONE_DURATION" >> $GITHUB_ENV
+        echo "BCDevOnLinux clone took: $CLONE_DURATION seconds"
+
+    - name: Build BC Container with Docker Compose
+      run: |
+        echo "Building Business Central container..."
+        CONTAINER_BUILD_START=$(date +%s.%N)
+
+        cd bcdev-temp
+
+        # Build the container using docker compose
+        docker compose build
+
+        CONTAINER_BUILD_END=$(date +%s.%N)
+        CONTAINER_BUILD_DURATION=$(echo "$CONTAINER_BUILD_END - $CONTAINER_BUILD_START" | bc -l | sed 's/^\./0./')
+        echo "CONTAINER_BUILD_DURATION=$CONTAINER_BUILD_DURATION" >> $GITHUB_ENV
+        echo "Container build took: $CONTAINER_BUILD_DURATION seconds"
+
+        cd ..
+
+    - name: Start BC Container
+      run: |
+        echo "Starting Business Central container..."
+        CONTAINER_START_TIME=$(date +%s.%N)
+
+        cd bcdev-temp
+
+        # Start the container
+        docker compose up -d
+
+        # Wait for container to be ready (basic health check)
+        echo "Waiting for container to be ready..."
+        sleep 30
+
+        # Check container status
+        docker compose ps
+        docker compose logs
+
+        CONTAINER_START_END=$(date +%s.%N)
+        CONTAINER_START_DURATION=$(echo "$CONTAINER_START_END - $CONTAINER_START_TIME" | bc -l | sed 's/^\./0./')
+        echo "CONTAINER_START_DURATION=$CONTAINER_START_DURATION" >> $GITHUB_ENV
+        echo "Container startup took: $CONTAINER_START_DURATION seconds"
+
+        cd ..
+
+    - name: Publish AL Extension to Container
+      run: |
+        echo "Publishing AL extension to BC container..."
+        PUBLISH_START=$(date +%s.%N)
+
+        # TODO: Replace with actual publish script when available
+        # Placeholder for publish script call
+        # ./scripts/publish-to-container.sh bin/*.app
+
+        echo "Publishing extension (placeholder - script not yet implemented)"
+
+        # For now, just verify the app file exists
+        if [ -f bin/*.app ]; then
+            echo "App file ready for publishing: $(ls bin/*.app)"
+        else
+            echo "ERROR: No app file found for publishing"
+            exit 1
+        fi
+
+        PUBLISH_END=$(date +%s.%N)
+        PUBLISH_DURATION=$(echo "$PUBLISH_END - $PUBLISH_START" | bc -l | sed 's/^\./0./')
+        echo "PUBLISH_DURATION=$PUBLISH_DURATION" >> $GITHUB_ENV
+        echo "Publishing took: $PUBLISH_DURATION seconds"
+
+    - name: Run AL Tests in Container
+      run: |
+        echo "Running AL tests in BC container..."
         TEST_START=$(date +%s.%N)
-        
-        # Count and validate test files
+
+        # TODO: Replace with actual test runner script when available
+        # Placeholder for test runner script call
+        # ./scripts/run-tests.sh
+
+        echo "Running tests (placeholder - script not yet implemented)"
+
+        # Count test files for reporting
         TEST_FILES=$(find src/Test -name "*.al" -type f 2>/dev/null | wc -l)
         echo "TEST_FILE_COUNT=$TEST_FILES" >> $GITHUB_ENV
-        
+
         if [ "$TEST_FILES" -gt 0 ]; then
             echo "Found $TEST_FILES test files:"
             find src/Test -name "*.al" -type f | while read file; do
                 echo "  - $(basename "$file")"
             done
-            
-            # Simulate test processing time
-            sleep 0.1
-            echo "Mock test validation completed successfully"
+
+            echo "Tests would be executed here once script is available"
         else
             echo "No test files found"
         fi
-        
+
         TEST_END=$(date +%s.%N)
         TEST_DURATION=$(echo "$TEST_END - $TEST_START" | bc -l | sed 's/^\./0./')
         echo "TEST_DURATION=$TEST_DURATION" >> $GITHUB_ENV
-        echo "Mock testing took: $TEST_DURATION seconds"
-        
+        echo "Testing took: $TEST_DURATION seconds"
+
+    - name: Cleanup Container
+      if: always()
+      run: |
+        echo "Cleaning up BC container..."
+        CLEANUP_START=$(date +%s.%N)
+
+        cd bcdev-temp
+
+        # Stop and remove containers
+        docker compose down -v
+
+        CLEANUP_END=$(date +%s.%N)
+        CLEANUP_DURATION=$(echo "$CLEANUP_END - $CLEANUP_START" | bc -l | sed 's/^\./0./')
+        echo "CLEANUP_DURATION=$CLEANUP_DURATION" >> $GITHUB_ENV
+        echo "Container cleanup took: $CLEANUP_DURATION seconds"
+
+        cd ..
+
     - name: Calculate comprehensive build metrics
       run: |
         END_TIME=$(date -Iseconds)
         END_EPOCH=$(date +%s.%N)
         TOTAL_DURATION=$(echo "$END_EPOCH - $BUILD_START_EPOCH" | bc -l | sed 's/^\./0./')
-        
-        echo "=== LINUX COMPILE-ONLY BUILD PERFORMANCE SUMMARY ==="
+
+        echo "=== LINUX FULL BUILD & TEST PERFORMANCE SUMMARY ==="
         echo "Build Start Time: $BUILD_START_TIME"
         echo "Build End Time: $END_TIME"
         echo ""
@@ -263,18 +380,24 @@ jobs:
         echo "Pre-compile Setup: $PRECOMPILE_SETUP_DURATION seconds"
         echo "Compilation: $COMPILE_DURATION seconds"
         echo "Post-compile Analysis: $POST_COMPILE_ANALYSIS_DURATION seconds"
-        echo "Mock Testing: $TEST_DURATION seconds"
+        echo "Docker Setup: $DOCKER_SETUP_DURATION seconds"
+        echo "BCDev Clone: $BCDEV_CLONE_DURATION seconds"
+        echo "Container Build: $CONTAINER_BUILD_DURATION seconds"
+        echo "Container Start: $CONTAINER_START_DURATION seconds"
+        echo "Publishing: $PUBLISH_DURATION seconds"
+        echo "Testing: $TEST_DURATION seconds"
+        echo "Cleanup: ${CLEANUP_DURATION:-0} seconds"
         echo ""
         echo "=== BUILD SUMMARY ==="
         echo "Total Build Time: $TOTAL_DURATION seconds"
         if [ -n "$APP_COUNT" ]; then echo "Apps Generated: $APP_COUNT"; fi
         if [ -n "$TOTAL_APP_SIZE_KB" ]; then echo "Total App Size: $TOTAL_APP_SIZE_KB KB"; fi
         if [ -n "$TEST_FILE_COUNT" ]; then echo "Test Files Found: $TEST_FILE_COUNT"; fi
-        
+
         # Create comprehensive JSON metrics for external analysis
-        cat > linux-compile-only-metrics.json << EOF
+        cat > linux-full-test-metrics.json << EOF
         {
-          "platform": "linux-compile-only",
+          "platform": "linux-full-test",
           "runner_os": "ubuntu-latest",
           "total_duration": $TOTAL_DURATION,
           "dotnet_setup_duration": ${DOTNET_SETUP_DURATION:-0},
@@ -289,29 +412,35 @@ jobs:
           "precompile_setup_duration": ${PRECOMPILE_SETUP_DURATION:-0},
           "compile_duration": ${COMPILE_DURATION:-0},
           "post_compile_analysis_duration": ${POST_COMPILE_ANALYSIS_DURATION:-0},
+          "docker_setup_duration": ${DOCKER_SETUP_DURATION:-0},
+          "bcdev_clone_duration": ${BCDEV_CLONE_DURATION:-0},
+          "container_build_duration": ${CONTAINER_BUILD_DURATION:-0},
+          "container_start_duration": ${CONTAINER_START_DURATION:-0},
+          "publish_duration": ${PUBLISH_DURATION:-0},
           "test_duration": ${TEST_DURATION:-0},
+          "cleanup_duration": ${CLEANUP_DURATION:-0},
           "app_count": ${APP_COUNT:-0},
           "total_app_size_kb": ${TOTAL_APP_SIZE_KB:-0},
           "test_file_count": ${TEST_FILE_COUNT:-0},
           "timestamp": "$END_TIME",
-          "uses_container": false,
-          "pipeline_type": "compile-only",
+          "uses_container": true,
+          "pipeline_type": "full-test",
           "measurement_precision": "nanoseconds",
           "github_run_id": "${GITHUB_RUN_ID:-unknown}",
           "github_run_number": "${GITHUB_RUN_NUMBER:-unknown}",
           "github_sha": "${GITHUB_SHA:-unknown}"
         }
         EOF
-        
-        echo "Comprehensive metrics saved to linux-compile-only-metrics.json"
-        
+
+        echo "Comprehensive metrics saved to linux-full-test-metrics.json"
+
         # Also create a raw measurements file for detailed analysis
-        cat > linux-raw-measurements.json << EOF
+        cat > linux-full-test-raw-measurements.json << EOF
         {
           "build_id": "${GITHUB_RUN_ID:-unknown}-${GITHUB_RUN_NUMBER:-unknown}",
           "platform": "linux",
           "runner": "ubuntu-latest",
-          "pipeline_type": "compile-only",
+          "pipeline_type": "full-test",
           "start_time": "$BUILD_START_TIME",
           "end_time": "$END_TIME",
           "measurements": [
@@ -326,11 +455,18 @@ jobs:
             {"stage": "precompile_setup", "duration": ${PRECOMPILE_SETUP_DURATION:-0}, "unit": "seconds"},
             {"stage": "compile", "duration": ${COMPILE_DURATION:-0}, "unit": "seconds"},
             {"stage": "post_compile_analysis", "duration": ${POST_COMPILE_ANALYSIS_DURATION:-0}, "unit": "seconds"},
-            {"stage": "mock_test", "duration": ${TEST_DURATION:-0}, "unit": "seconds"}
+            {"stage": "docker_setup", "duration": ${DOCKER_SETUP_DURATION:-0}, "unit": "seconds"},
+            {"stage": "bcdev_clone", "duration": ${BCDEV_CLONE_DURATION:-0}, "unit": "seconds"},
+            {"stage": "container_build", "duration": ${CONTAINER_BUILD_DURATION:-0}, "unit": "seconds"},
+            {"stage": "container_start", "duration": ${CONTAINER_START_DURATION:-0}, "unit": "seconds"},
+            {"stage": "publish", "duration": ${PUBLISH_DURATION:-0}, "unit": "seconds"},
+            {"stage": "test", "duration": ${TEST_DURATION:-0}, "unit": "seconds"},
+            {"stage": "cleanup", "duration": ${CLEANUP_DURATION:-0}, "unit": "seconds"}
           ],
           "totals": {
             "total_duration": $TOTAL_DURATION,
-            "dependency_total": ${TOTAL_DEPENDENCY_DURATION:-0}
+            "dependency_total": ${TOTAL_DEPENDENCY_DURATION:-0},
+            "container_total": $(echo "${DOCKER_SETUP_DURATION:-0} + ${BCDEV_CLONE_DURATION:-0} + ${CONTAINER_BUILD_DURATION:-0} + ${CONTAINER_START_DURATION:-0}" | bc -l | sed 's/^\./0./')
           },
           "artifacts": {
             "app_count": ${APP_COUNT:-0},
@@ -340,13 +476,16 @@ jobs:
           "environment": {
             "github_actions": true,
             "runner_os": "Linux",
-            "measurement_precision": "nanoseconds"
+            "measurement_precision": "nanoseconds",
+            "uses_docker": true,
+            "bcdev_repo": "${{ env.BCDEV_REPO }}",
+            "bcdev_branch": "${{ env.BCDEV_BRANCH }}"
           }
         }
         EOF
-        
-        echo "Raw measurements saved to linux-raw-measurements.json"
-        
+
+        echo "Raw measurements saved to linux-full-test-raw-measurements.json"
+
     - name: Display system information
       run: |
         echo "=== SYSTEM INFORMATION ==="
@@ -355,13 +494,14 @@ jobs:
         echo "CPU: $(nproc) cores"
         echo "Memory: $(free -h | grep Mem | awk '{print $2}')"
         echo "Disk: $(df -h . | tail -1 | awk '{print $4}') available"
-        
+        echo "Docker: $(docker --version)"
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: linux-compile-only-artifacts
+        name: linux-full-test-artifacts
         path: |
           bin/
-          linux-compile-only-metrics.json
-          linux-raw-measurements.json
+          linux-full-test-metrics.json
+          linux-full-test-raw-measurements.json
         retention-days: 30

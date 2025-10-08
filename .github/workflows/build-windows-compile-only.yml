@@ -101,7 +101,7 @@ jobs:
         
         try {
             # Download packages directly using the same approach as Linux for fair comparison
-            $bcVersion = "26.3.36158.37125"
+            $bcVersion = "26.3.36158.36341"
             $bcBaseUrl = "https://dynamicssmb2.pkgs.visualstudio.com/571e802d-b44b-45fc-bd41-4cfddec73b44/_packaging/b656b10c-3de0-440c-900c-bc2e4e86d84c/nuget/v3/flat2"
             
             New-Item -ItemType Directory -Path temp_packages -Force | Out-Null
