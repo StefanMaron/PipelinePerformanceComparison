@@ -88,7 +88,7 @@ jobs:
 
         # Get artifact URL using BcContainerHelper
         Write-Host "Resolving BC artifact URL for version $($env:BC_VERSION)..."
-        $artifactUrl = Get-BCArtifactUrl -type OnPrem -version $env:BC_VERSION -country w1 -select Latest
+        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version $env:BC_VERSION -country w1 -select Latest
         Write-Host "Using artifact URL: $artifactUrl"
 
         # Create container with BcContainerHelper using artifact URL
