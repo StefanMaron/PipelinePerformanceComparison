@@ -30,7 +30,7 @@ jobs:
         # Remove what we don't need - faster subset
         android: true
         haskell: true
-        large-packages: true
+        large-packages: false
         swap-storage: false
 
     - name: Record start time
