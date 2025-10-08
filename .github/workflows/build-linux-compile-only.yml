@@ -90,7 +90,7 @@ jobs:
         BC_FEED="https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json"
         
         # Download packages directly using the discovered package base URL
-        BC_VERSION="26.4.37194.38224"
+        BC_VERSION="26.3.36158.37125"
         BC_BASE_URL="https://dynamicssmb2.pkgs.visualstudio.com/571e802d-b44b-45fc-bd41-4cfddec73b44/_packaging/b656b10c-3de0-440c-900c-bc2e4e86d84c/nuget/v3/flat2"
         
         mkdir -p temp_packages
