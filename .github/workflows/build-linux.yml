@@ -341,19 +341,20 @@ jobs:
         echo "Publishing AL extension to BC container..."
         PUBLISH_START=$(date +%s.%N)
 
-        # TODO: Replace with actual publish script when available
-        # Placeholder for publish script call
-        # ./scripts/publish-to-container.sh bin/*.app
+        # Find the app file
+        APP_FILE=$(find bin -name "*.app" -type f | head -n 1)
 
-        echo "Publishing extension (placeholder - script not yet implemented)"
-
-        # For now, just verify the app file exists
-        if [ -f *.app ]; then
-            echo "App file ready for publishing: $(ls *.app)"
-        else
+        if [ -z "$APP_FILE" ]; then
             echo "ERROR: No app file found for publishing"
             exit 1
         fi
+
+        echo "Publishing app file: $APP_FILE"
+
+        # Publish extension to BC container using API
+        curl -u "admin:P@ssw0rd123!" \
+             -F "file=@$APP_FILE" \
+             "http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
 
         PUBLISH_END=$(date +%s.%N)
         PUBLISH_DURATION=$(echo "$PUBLISH_END - $PUBLISH_START" | bc -l | sed 's/^\./0./')
