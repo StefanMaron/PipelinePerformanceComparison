@@ -289,6 +289,8 @@ jobs:
 
         while [ $ELAPSED -lt $MAX_WAIT ]; do
             HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' $CONTAINER_NAME 2>/dev/null || echo "unknown")
+            # Trim any whitespace
+            HEALTH_STATUS=$(echo "$HEALTH_STATUS" | tr -d '[:space:]')
 
             if [ "$HEALTH_STATUS" = "healthy" ]; then
                 echo "✓ BC container is healthy and ready"
@@ -307,6 +309,9 @@ jobs:
             sleep 10
             ELAPSED=$((ELAPSED + 10))
         done
+
+        # Final health check after loop completes (in case timeout was reached while healthy)
+        HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' $CONTAINER_NAME 2>/dev/null || echo "unknown")
 
         if [ "$HEALTH_STATUS" != "healthy" ]; then
             echo "ERROR: Container did not become healthy within $MAX_WAIT seconds"
