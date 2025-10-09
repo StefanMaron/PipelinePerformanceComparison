@@ -230,9 +230,9 @@ jobs:
       uses: actions/cache/restore@v4
       with:
         path: /tmp/docker-images
-        key: docker-images-${{ runner.os }}-${{ hashFiles('.github/workflows/build-linux.yml') }}
+        key: docker-images-${{ runner.os }}-bcwine-v2
         restore-keys: |
-          docker-images-${{ runner.os }}-
+          docker-images-${{ runner.os }}-bcwine-v2
 
     - name: Load cached Docker images
       run: |
@@ -292,7 +292,8 @@ jobs:
 
         cd ..
 
-    - name: Save Docker images to cache
+    - name: Save Docker images to cache directory
+      if: steps.cache-docker.outputs.cache-hit != 'true'
       run: |
         mkdir -p /tmp/docker-images
 
@@ -308,6 +309,13 @@ jobs:
           echo "Saving SQL Server image: $SQL_IMAGE..."
           docker save "$SQL_IMAGE" -o /tmp/docker-images/mssql-server.tar
         fi
+
+    - name: Cache Docker images
+      if: steps.cache-docker.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: /tmp/docker-images
+        key: docker-images-${{ runner.os }}-bcwine-v2
 
     - name: Start BC Container
       run: |
@@ -552,13 +560,6 @@ jobs:
         echo "Memory: $(free -h | grep Mem | awk '{print $2}')"
         echo "Disk: $(df -h . | tail -1 | awk '{print $4}') available"
         echo "Docker: $(docker --version)"
-
-    - name: Save Docker images cache
-      if: always()
-      uses: actions/cache/save@v4
-      with:
-        path: /tmp/docker-images
-        key: docker-images-${{ runner.os }}-${{ hashFiles('.github/workflows/build-linux.yml') }}
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
