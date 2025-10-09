@@ -285,6 +285,7 @@ jobs:
         MAX_WAIT=600  # 10 minutes
         ELAPSED=0
         HEALTH_STATUS=""
+        PREV_HEALTH_STATUS=""
 
         while [ $ELAPSED -lt $MAX_WAIT ]; do
             HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' $CONTAINER_NAME 2>/dev/null || echo "unknown")
@@ -294,7 +295,15 @@ jobs:
                 break
             fi
 
+            # Check if container became unhealthy (was starting, now unhealthy)
+            if [ "$HEALTH_STATUS" = "unhealthy" ] && [ "$PREV_HEALTH_STATUS" != "unhealthy" ]; then
+                echo "⚠ Container became unhealthy - printing logs for investigation:"
+                docker compose ps
+                docker compose logs --tail=100
+            fi
+
             echo "Container status: $HEALTH_STATUS (waited ${ELAPSED}s / ${MAX_WAIT}s)"
+            PREV_HEALTH_STATUS="$HEALTH_STATUS"
             sleep 10
             ELAPSED=$((ELAPSED + 10))
         done
@@ -302,6 +311,7 @@ jobs:
         if [ "$HEALTH_STATUS" != "healthy" ]; then
             echo "ERROR: Container did not become healthy within $MAX_WAIT seconds"
             echo "Final status: $HEALTH_STATUS"
+            echo "Printing full container logs:"
             docker compose ps
             docker compose logs
             exit 1
