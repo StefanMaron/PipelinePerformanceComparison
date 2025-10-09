@@ -281,7 +281,7 @@ jobs:
 
         # Wait for container to become healthy (can take up to 10 minutes)
         echo "Waiting for BC container to become healthy (this can take up to 10 minutes)..."
-        CONTAINER_NAME=$(docker compose ps -q)
+        CONTAINER_NAME=$(docker compose ps -q | head -n 1)
         MAX_WAIT=1200  # 20 minutes
         ELAPSED=0
         HEALTH_STATUS=""
@@ -289,8 +289,6 @@ jobs:
 
         while [ $ELAPSED -lt $MAX_WAIT ]; do
             HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' $CONTAINER_NAME 2>/dev/null || echo "unknown")
-            # Trim any whitespace
-            HEALTH_STATUS=$(echo "$HEALTH_STATUS" | tr -d '[:space:]')
 
             if [ "$HEALTH_STATUS" = "healthy" ]; then
                 echo "✓ BC container is healthy and ready"
