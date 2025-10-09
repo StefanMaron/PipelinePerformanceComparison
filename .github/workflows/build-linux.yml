@@ -319,9 +319,15 @@ jobs:
         # Start the container
         docker compose up -d
 
-        # Wait for container to be ready (basic health check)
-        echo "Waiting for container to be ready..."
-        sleep 30
+        # Wait for BC Server service to auto-start
+        echo "Waiting for BC Server service to auto-start (1-2 minutes)..."
+        for i in {1..60}; do
+            if docker compose logs 2>&1 | grep -q "BC Server service auto-started successfully"; then
+                echo "✓ BC Server service is ready"
+                break
+            fi
+            sleep 2
+        done
 
         # Check container status
         docker compose ps
