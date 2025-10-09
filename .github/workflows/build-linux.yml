@@ -225,29 +225,6 @@ jobs:
         echo "POST_COMPILE_ANALYSIS_DURATION=$ANALYSIS_DURATION" >> $GITHUB_ENV
         echo "Post-compilation analysis: $ANALYSIS_DURATION seconds"
 
-    - name: Restore Docker images cache
-      id: cache-docker
-      uses: actions/cache/restore@v4
-      with:
-        path: /tmp/docker-images
-        key: docker-images-${{ runner.os }}-bcwine-v2
-        restore-keys: |
-          docker-images-${{ runner.os }}-bcwine-v2
-
-    - name: Load cached Docker images
-      run: |
-        if [ -d "/tmp/docker-images" ] && [ "$(ls -A /tmp/docker-images)" ]; then
-          echo "Loading cached Docker images..."
-          for img in /tmp/docker-images/*.tar; do
-            if [ -f "$img" ]; then
-              echo "Loading $img..."
-              docker load -i "$img"
-            fi
-          done
-        else
-          echo "No cached images found"
-        fi
-
     - name: Setup Docker for BC Container
       run: |
         echo "Setting up Docker environment..."
@@ -292,31 +269,6 @@ jobs:
 
         cd ..
 
-    - name: Save Docker images to cache directory
-      if: steps.cache-docker.outputs.cache-hit != 'true'
-      run: |
-        mkdir -p /tmp/docker-images
-
-        # Save the BC Wine base image
-        if docker image inspect docker.io/stefanmaronbc/bc-wine-base:latest >/dev/null 2>&1; then
-          echo "Saving bc-wine-base image..."
-          docker save docker.io/stefanmaronbc/bc-wine-base:latest -o /tmp/docker-images/bc-wine-base.tar
-        fi
-
-        # Save SQL Server image (find the exact tag used)
-        SQL_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "mcr.microsoft.com/mssql/server" | head -n1)
-        if [ -n "$SQL_IMAGE" ]; then
-          echo "Saving SQL Server image: $SQL_IMAGE..."
-          docker save "$SQL_IMAGE" -o /tmp/docker-images/mssql-server.tar
-        fi
-
-    - name: Cache Docker images
-      if: steps.cache-docker.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
-      with:
-        path: /tmp/docker-images
-        key: docker-images-${{ runner.os }}-bcwine-v2
-
     - name: Start BC Container
       run: |
         echo "Starting Business Central container..."
@@ -327,15 +279,33 @@ jobs:
         # Start the container
         docker compose up -d
 
-        # Wait for BC Server service to auto-start
-        echo "Waiting for BC Server service to auto-start (1-2 minutes)..."
-        for i in {1..60}; do
-            if docker compose logs 2>&1 | grep -q "BC Server service auto-started successfully"; then
-                echo "✓ BC Server service is ready"
+        # Wait for container to become healthy (can take up to 10 minutes)
+        echo "Waiting for BC container to become healthy (this can take up to 10 minutes)..."
+        CONTAINER_NAME=$(docker compose ps -q)
+        MAX_WAIT=600  # 10 minutes
+        ELAPSED=0
+        HEALTH_STATUS=""
+
+        while [ $ELAPSED -lt $MAX_WAIT ]; do
+            HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' $CONTAINER_NAME 2>/dev/null || echo "unknown")
+
+            if [ "$HEALTH_STATUS" = "healthy" ]; then
+                echo "✓ BC container is healthy and ready"
                 break
             fi
-            sleep 2
+
+            echo "Container status: $HEALTH_STATUS (waited ${ELAPSED}s / ${MAX_WAIT}s)"
+            sleep 10
+            ELAPSED=$((ELAPSED + 10))
         done
+
+        if [ "$HEALTH_STATUS" != "healthy" ]; then
+            echo "ERROR: Container did not become healthy within $MAX_WAIT seconds"
+            echo "Final status: $HEALTH_STATUS"
+            docker compose ps
+            docker compose logs
+            exit 1
+        fi
 
         # Check container status
         docker compose ps
@@ -363,36 +333,10 @@ jobs:
 
         echo "Publishing app file: $APP_FILE"
 
-        # Publish extension to BC container using API with retry logic
-        MAX_RETRIES=20
-        RETRY_DELAY=5
-        ATTEMPT=1
-        SUCCESS=false
-
-        while [ $ATTEMPT -le $MAX_RETRIES ]; do
-            echo "Publish attempt $ATTEMPT of $MAX_RETRIES..."
-
-            if curl -f -u "admin:P@ssw0rd123!" \
-                 -F "file=@$APP_FILE" \
-                 "http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"; then
-                SUCCESS=true
-                echo "✓ Publishing succeeded on attempt $ATTEMPT"
-                break
-            else
-                echo "✗ Publishing failed on attempt $ATTEMPT"
-                if [ $ATTEMPT -lt $MAX_RETRIES ]; then
-                    echo "Waiting $RETRY_DELAY seconds before retry..."
-                    sleep $RETRY_DELAY
-                fi
-            fi
-
-            ATTEMPT=$((ATTEMPT + 1))
-        done
-
-        if [ "$SUCCESS" = false ]; then
-            echo "ERROR: Publishing failed after $MAX_RETRIES attempts"
-            exit 1
-        fi
+        # Publish extension to BC container using API
+        curl -u "admin:P@ssw0rd123!" \
+             -F "file=@$APP_FILE" \
+             "http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
 
         PUBLISH_END=$(date +%s.%N)
         PUBLISH_DURATION=$(echo "$PUBLISH_END - $PUBLISH_START" | bc -l | sed 's/^\./0./')
