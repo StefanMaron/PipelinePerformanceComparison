@@ -9,7 +9,7 @@ on:
 
 env:
   AL_VERSION: 'latest'
-  BC_VERSION: '26.3'
+  BC_VERSION: '26.5'
   CONTAINER_NAME: 'bcserver'
   
 jobs:
