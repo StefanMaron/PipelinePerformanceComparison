@@ -77,6 +77,27 @@ jobs:
             Write-Host "Created .alpackages directory"
         }
         
+    - name: Download BC Artifacts
+      shell: powershell
+      run: |
+        Write-Host "Downloading Business Central artifacts..."
+        $downloadStart = Get-Date
+
+        # Get artifact URL using BcContainerHelper
+        Write-Host "Resolving BC artifact URL for version $($env:BC_VERSION)..."
+        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version $env:BC_VERSION -country w1 -select Latest
+        Write-Host "Using artifact URL: $artifactUrl"
+
+        # Download artifacts manually first
+        Write-Host "Starting artifact download..."
+        Download-Artifacts -artifactUrl $artifactUrl -includePlatform -force
+
+        $downloadEnd = Get-Date
+        $downloadDuration = ($downloadEnd - $downloadStart).TotalSeconds
+        echo "ARTIFACT_DOWNLOAD_DURATION=$downloadDuration" >> $env:GITHUB_ENV
+        echo "ARTIFACT_URL=$artifactUrl" >> $env:GITHUB_ENV
+        Write-Host "Artifact download took: $downloadDuration seconds"
+
     - name: Create BC Container
       shell: powershell
       run: |
@@ -85,11 +106,9 @@ jobs:
 
         # Set container parameters
         $containerName = $env:CONTAINER_NAME
+        $artifactUrl = $env:ARTIFACT_URL
 
-        # Get artifact URL using BcContainerHelper
-        Write-Host "Resolving BC artifact URL for version $($env:BC_VERSION)..."
-        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version $env:BC_VERSION -country w1 -select Latest
-        Write-Host "Using artifact URL: $artifactUrl"
+        Write-Host "Creating container with artifact URL: $artifactUrl"
 
         # Create container with BcContainerHelper using artifact URL
         $containerParams = @{
@@ -104,6 +123,7 @@ jobs:
             memoryLimit = '8G'
             isolation = 'process'
             updateHosts = $true
+            timeout = 900
         }
 
         New-BcContainer @containerParams
@@ -260,18 +280,20 @@ jobs:
         
         Write-Host "=== WINDOWS BUILD PERFORMANCE SUMMARY (WITH BC CONTAINER) ==="
         Write-Host "AL/BCContainerHelper Installation: $env:AL_INSTALL_DURATION seconds"
-        Write-Host "BC Container Creation: $env:CONTAINER_CREATION_DURATION seconds"  
+        Write-Host "BC Artifact Download: $env:ARTIFACT_DOWNLOAD_DURATION seconds"
+        Write-Host "BC Container Creation: $env:CONTAINER_CREATION_DURATION seconds"
         Write-Host "Compilation & Publishing: $env:COMPILE_DURATION seconds"
         Write-Host "Test Execution: $env:TEST_DURATION seconds"
         Write-Host "Total Build Time: $totalDuration seconds"
         Write-Host "Build completed at: $endTime"
-        
+
         # Save comprehensive metrics for comparison
         $metrics = @{
             platform = "windows-bc-container"
             runner_os = "windows-2022"
             total_duration = $totalDuration
             al_install_duration = [double]$env:AL_INSTALL_DURATION
+            artifact_download_duration = [double]$env:ARTIFACT_DOWNLOAD_DURATION
             container_creation_duration = [double]$env:CONTAINER_CREATION_DURATION
             compile_duration = [double]$env:COMPILE_DURATION
             test_duration = [double]$env:TEST_DURATION
@@ -297,6 +319,7 @@ jobs:
             end_time = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
             measurements = @(
                 @{ stage = "al_bc_install"; duration = [double]$env:AL_INSTALL_DURATION; unit = "seconds" }
+                @{ stage = "artifact_download"; duration = [double]$env:ARTIFACT_DOWNLOAD_DURATION; unit = "seconds" }
                 @{ stage = "container_creation"; duration = [double]$env:CONTAINER_CREATION_DURATION; unit = "seconds" }
                 @{ stage = "compile_publish"; duration = [double]$env:COMPILE_DURATION; unit = "seconds" }
                 @{ stage = "real_test_execution"; duration = [double]$env:TEST_DURATION; unit = "seconds" }
