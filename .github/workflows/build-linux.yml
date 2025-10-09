@@ -363,10 +363,36 @@ jobs:
 
         echo "Publishing app file: $APP_FILE"
 
-        # Publish extension to BC container using API
-        curl -u "admin:P@ssw0rd123!" \
-             -F "file=@$APP_FILE" \
-             "http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
+        # Publish extension to BC container using API with retry logic
+        MAX_RETRIES=20
+        RETRY_DELAY=5
+        ATTEMPT=1
+        SUCCESS=false
+
+        while [ $ATTEMPT -le $MAX_RETRIES ]; do
+            echo "Publish attempt $ATTEMPT of $MAX_RETRIES..."
+
+            if curl -f -u "admin:P@ssw0rd123!" \
+                 -F "file=@$APP_FILE" \
+                 "http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"; then
+                SUCCESS=true
+                echo "✓ Publishing succeeded on attempt $ATTEMPT"
+                break
+            else
+                echo "✗ Publishing failed on attempt $ATTEMPT"
+                if [ $ATTEMPT -lt $MAX_RETRIES ]; then
+                    echo "Waiting $RETRY_DELAY seconds before retry..."
+                    sleep $RETRY_DELAY
+                fi
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+        done
+
+        if [ "$SUCCESS" = false ]; then
+            echo "ERROR: Publishing failed after $MAX_RETRIES attempts"
+            exit 1
+        fi
 
         PUBLISH_END=$(date +%s.%N)
         PUBLISH_DURATION=$(echo "$PUBLISH_END - $PUBLISH_START" | bc -l | sed 's/^\./0./')
