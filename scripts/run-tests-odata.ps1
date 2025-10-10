@@ -91,6 +91,7 @@ try {
         -Credential $Credential `
         -Headers $Headers `
         -Body $RequestBody `
+        -AllowUnencryptedAuthentication `
         -TimeoutSec 30
 
     $RequestId = $CreateResponse.Id
@@ -109,6 +110,7 @@ try {
         -Method Post `
         -Credential $Credential `
         -Headers $Headers `
+        -AllowUnencryptedAuthentication `
         -TimeoutSec 60
 
     Write-Host "✓ Execution triggered" -ForegroundColor Green
@@ -137,6 +139,7 @@ try {
             -Method Get `
             -Credential $Credential `
             -Headers $Headers `
+            -AllowUnencryptedAuthentication `
             -TimeoutSec 30
 
         $Status = $StatusResponse.Status
@@ -171,7 +174,7 @@ try {
 
         Write-Host "  (Skipping log retrieval - API page for Log Table not yet implemented)" -ForegroundColor Gray
         # Uncomment when Log Table API is available:
-        # $LogResponse = Invoke-RestMethod -Uri $LogApiUrl -Method Get -Credential $Credential -Headers $Headers -TimeoutSec 30
+        # $LogResponse = Invoke-RestMethod -Uri $LogApiUrl -Method Get -Credential $Credential -Headers $Headers -AllowUnencryptedAuthentication -TimeoutSec 30
         # $LogResponse.value | ForEach-Object {
         #     Write-Host "  Log: $($_.'message') - Computer: $($_.'computerName')" -ForegroundColor Gray
         # }
