@@ -103,50 +103,43 @@ jobs:
         $artifactUrl = Get-BCArtifactUrl -type Sandbox -version $env:BC_VERSION -country w1 -select Latest
         Write-Host "Using artifact URL: $artifactUrl"
 
-        # Start Docker events monitoring in background
-        Write-Host "Starting Docker events monitoring..."
-        $dockerEventsJob = Start-Job -ScriptBlock {
-            docker events --filter "type=container" --format "{{.Time}} {{.Status}} {{.ID}} {{.Actor.Attributes.name}}"
+        Write-Host "`n=== Docker Status Before Container Creation ==="
+        docker ps -a
+        docker images
+
+        # Create container with BcContainerHelper - will download artifacts automatically
+        $containerParams = @{
+            containerName = $containerName
+            artifactUrl = $artifactUrl
+            accept_eula = $true
+            auth = 'NavUserPassword'
+            includeTestToolkit = $true
+            includeTestLibrariesOnly = $true
+            enableSymbolLoading = $true
+            assignPremiumPlan = $true
+            memoryLimit = '8G'
+            isolation = 'process'
+            updateHosts = $true
+            timeout = 900
         }
 
-        # Start Docker stats monitoring in background
-        Write-Host "Starting Docker stats monitoring..."
-        $dockerStatsJob = Start-Job -ScriptBlock {
-            Start-Sleep -Seconds 5  # Wait a bit for container to start
-            docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" 2>$null
-        }
+        Write-Host "`n=== Starting Container Creation ==="
+        New-BcContainer @containerParams
 
-        try {
-            # Create container with BcContainerHelper - will download artifacts automatically
-            $containerParams = @{
-                containerName = $containerName
-                artifactUrl = $artifactUrl
-                accept_eula = $true
-                auth = 'NavUserPassword'
-                includeTestToolkit = $true
-                includeTestLibrariesOnly = $true
-                enableSymbolLoading = $true
-                assignPremiumPlan = $true
-                memoryLimit = '8G'
-                isolation = 'process'
-                updateHosts = $true
-                timeout = 900
-            }
+        Write-Host "`n=== Docker Status After Container Creation ==="
+        docker ps -a
 
-            New-BcContainer @containerParams
+        Write-Host "`n=== Checking Container Health ==="
+        $container = docker ps -a --filter "name=$containerName" --format "{{.ID}}"
+        if ($container) {
+            Write-Host "Container ID: $container"
+            Write-Host "`nContainer Logs (last 50 lines):"
+            docker logs --tail 50 $container
 
-            Write-Host "`n=== Docker Events During Container Creation ==="
-            Receive-Job -Job $dockerEventsJob
-
-            Write-Host "`n=== Docker Stats ==="
-            Receive-Job -Job $dockerStatsJob
-
-        } finally {
-            # Cleanup background jobs
-            Stop-Job -Job $dockerEventsJob -ErrorAction SilentlyContinue
-            Remove-Job -Job $dockerEventsJob -ErrorAction SilentlyContinue
-            Stop-Job -Job $dockerStatsJob -ErrorAction SilentlyContinue
-            Remove-Job -Job $dockerStatsJob -ErrorAction SilentlyContinue
+            Write-Host "`nContainer Inspect:"
+            docker inspect $container | ConvertFrom-Json | ConvertTo-Json -Depth 3
+        } else {
+            Write-Host "WARNING: Container $containerName not found!"
         }
 
         $containerEnd = Get-Date
