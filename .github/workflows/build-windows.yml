@@ -125,7 +125,6 @@ jobs:
             memoryLimit = '8G'
             isolation = 'process'
             updateHosts = $true
-            timeout = 900
             additionalParameters = $additionalParameters
         }
 
