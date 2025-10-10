@@ -45,7 +45,7 @@ jobs:
         Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
         Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
         Install-Module -Name BcContainerHelper -Force -AllowClobber
-        Import-Module BcContainerHelper -Force
+        Import-Module BcContainerHelper -Force -DisableNameChecking
 
         # Enable partner telemetry for better debugging
         Write-Host "Configuring BcContainerHelper telemetry..."
