@@ -103,23 +103,51 @@ jobs:
         $artifactUrl = Get-BCArtifactUrl -type Sandbox -version $env:BC_VERSION -country w1 -select Latest
         Write-Host "Using artifact URL: $artifactUrl"
 
-        # Create container with BcContainerHelper - will download artifacts automatically
-        $containerParams = @{
-            containerName = $containerName
-            artifactUrl = $artifactUrl
-            accept_eula = $true
-            auth = 'NavUserPassword'
-            includeTestToolkit = $true
-            includeTestLibrariesOnly = $true
-            enableSymbolLoading = $true
-            assignPremiumPlan = $true
-            memoryLimit = '8G'
-            isolation = 'process'
-            updateHosts = $true
-            timeout = 900
+        # Start Docker events monitoring in background
+        Write-Host "Starting Docker events monitoring..."
+        $dockerEventsJob = Start-Job -ScriptBlock {
+            docker events --filter "type=container" --format "{{.Time}} {{.Status}} {{.ID}} {{.Actor.Attributes.name}}"
         }
 
-        New-BcContainer @containerParams
+        # Start Docker stats monitoring in background
+        Write-Host "Starting Docker stats monitoring..."
+        $dockerStatsJob = Start-Job -ScriptBlock {
+            Start-Sleep -Seconds 5  # Wait a bit for container to start
+            docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" 2>$null
+        }
+
+        try {
+            # Create container with BcContainerHelper - will download artifacts automatically
+            $containerParams = @{
+                containerName = $containerName
+                artifactUrl = $artifactUrl
+                accept_eula = $true
+                auth = 'NavUserPassword'
+                includeTestToolkit = $true
+                includeTestLibrariesOnly = $true
+                enableSymbolLoading = $true
+                assignPremiumPlan = $true
+                memoryLimit = '8G'
+                isolation = 'process'
+                updateHosts = $true
+                timeout = 900
+            }
+
+            New-BcContainer @containerParams
+
+            Write-Host "`n=== Docker Events During Container Creation ==="
+            Receive-Job -Job $dockerEventsJob
+
+            Write-Host "`n=== Docker Stats ==="
+            Receive-Job -Job $dockerStatsJob
+
+        } finally {
+            # Cleanup background jobs
+            Stop-Job -Job $dockerEventsJob -ErrorAction SilentlyContinue
+            Remove-Job -Job $dockerEventsJob -ErrorAction SilentlyContinue
+            Stop-Job -Job $dockerStatsJob -ErrorAction SilentlyContinue
+            Remove-Job -Job $dockerStatsJob -ErrorAction SilentlyContinue
+        }
 
         $containerEnd = Get-Date
         $containerDuration = ($containerEnd - $containerStart).TotalSeconds
