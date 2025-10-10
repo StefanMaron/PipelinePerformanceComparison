@@ -39,18 +39,30 @@ jobs:
       run: |
         Write-Host "Installing BcContainerHelper and AL Language Extension..."
         $installStart = Get-Date
-        
+
         # Install BcContainerHelper
         Write-Host "Installing BcContainerHelper module..."
         Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
         Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
         Install-Module -Name BcContainerHelper -Force -AllowClobber
         Import-Module BcContainerHelper -Force
-        
+
+        # Enable partner telemetry for better debugging
+        Write-Host "Configuring BcContainerHelper telemetry..."
+        if ("${{ secrets.PARTNER_TELEMETRY_CONNECTION_STRING }}" -ne "") {
+            Write-Host "Partner telemetry enabled with extended telemetry"
+            $bcContainerHelperConfig.PartnerTelemetryConnectionString = "${{ secrets.PARTNER_TELEMETRY_CONNECTION_STRING }}"
+            $bcContainerHelperConfig.SendExtendedTelemetryToMicrosoft = $true
+        } else {
+            Write-Host "No partner telemetry connection string configured - skipping"
+        }
+        # Enable detailed container helper output
+        $bcContainerHelperConfig.TreatWarningsAsErrors = @()
+
         # Install BC Development Tools
         Write-Host "Installing BC Development Tools..."
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools --version 16.0.24.41895-beta
-        
+
         $installEnd = Get-Date
         $installDuration = ($installEnd - $installStart).TotalSeconds
         echo "AL_INSTALL_DURATION=$installDuration" >> $env:GITHUB_ENV
