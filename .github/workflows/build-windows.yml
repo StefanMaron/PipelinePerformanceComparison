@@ -121,7 +121,6 @@ jobs:
             auth = 'UserPassword'
             includeTestToolkit = $true
             includeTestLibrariesOnly = $true
-            enableSymbolLoading = $true
             assignPremiumPlan = $true
             memoryLimit = '8G'
             isolation = 'process'
