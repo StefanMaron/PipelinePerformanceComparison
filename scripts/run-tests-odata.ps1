@@ -68,17 +68,48 @@ Write-Host "Tenant: $Tenant" -ForegroundColor Gray
 Write-Host "Codeunit ID: $CodeunitId" -ForegroundColor Gray
 Write-Host ""
 
-# Create credential object
+# Create credential object and Basic Auth header
 $SecurePassword = ConvertTo-SecureString $Password -AsPlainText -Force
 $Credential = New-Object System.Management.Automation.PSCredential($Username, $SecurePassword)
+
+# Create Basic Authentication header manually as fallback
+$base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(("{0}:{1}" -f $Username, $Password)))
 
 # Headers for API requests
 $Headers = @{
     "Content-Type" = "application/json"
     "Accept" = "application/json"
+    "Authorization" = "Basic $base64AuthInfo"
 }
 
 try {
+    # Pre-flight check: Test basic API connectivity
+    Write-Host "[0/4] Testing API connectivity..." -ForegroundColor Yellow
+    try {
+        $testUrl = "$BaseUrl/api/v2.0/companies"
+        $testResponse = Invoke-WebRequest -Uri $testUrl `
+            -Method Get `
+            -Headers $Headers `
+            -AllowUnencryptedAuthentication `
+            -SkipHttpErrorCheck `
+            -TimeoutSec 10
+
+        if ($testResponse.StatusCode -eq 200) {
+            Write-Host "✓ API is accessible (HTTP $($testResponse.StatusCode))" -ForegroundColor Green
+        } elseif ($testResponse.StatusCode -eq 401) {
+            Write-Host "✗ Authentication failed (HTTP 401)" -ForegroundColor Red
+            Write-Host "  Current credentials: $Username / [password hidden]" -ForegroundColor Gray
+            Write-Host "  Please verify container credentials or check BCDevOnLinux setup" -ForegroundColor Yellow
+            exit 1
+        } else {
+            Write-Host "⚠ Unexpected status code: $($testResponse.StatusCode)" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "⚠ Warning: Could not verify API connectivity: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "  Continuing anyway..." -ForegroundColor Gray
+    }
+    Write-Host ""
+
     Write-Host "[1/4] Creating execution request..." -ForegroundColor Yellow
 
     # Step 1: Create a new Codeunit Run Request
@@ -88,10 +119,10 @@ try {
 
     $CreateResponse = Invoke-RestMethod -Uri "$ApiUrl" `
         -Method Post `
-        -Credential $Credential `
         -Headers $Headers `
         -Body $RequestBody `
         -AllowUnencryptedAuthentication `
+        -SkipHttpErrorCheck `
         -TimeoutSec 30
 
     $RequestId = $CreateResponse.Id
@@ -108,9 +139,9 @@ try {
 
     $ExecuteResponse = Invoke-RestMethod -Uri $ActionUrl `
         -Method Post `
-        -Credential $Credential `
         -Headers $Headers `
         -AllowUnencryptedAuthentication `
+        -SkipHttpErrorCheck `
         -TimeoutSec 60
 
     Write-Host "✓ Execution triggered" -ForegroundColor Green
@@ -137,9 +168,9 @@ try {
         # Get current status
         $StatusResponse = Invoke-RestMethod -Uri "$RequestUrl" `
             -Method Get `
-            -Credential $Credential `
             -Headers $Headers `
             -AllowUnencryptedAuthentication `
+            -SkipHttpErrorCheck `
             -TimeoutSec 30
 
         $Status = $StatusResponse.Status
@@ -201,9 +232,28 @@ try {
     Write-Host "Error Message: $($_.Exception.Message)" -ForegroundColor Red
 
     if ($_.Exception.Response) {
-        Write-Host "HTTP Status: $($_.Exception.Response.StatusCode.Value__) $($_.Exception.Response.StatusDescription)" -ForegroundColor Red
+        $statusCode = $_.Exception.Response.StatusCode
+        Write-Host "HTTP Status Code: $($statusCode.value__)" -ForegroundColor Red
+
+        # Read response body if available
+        try {
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $responseBody = $reader.ReadToEnd()
+            $reader.Close()
+            if ($responseBody) {
+                Write-Host "Response Body: $responseBody" -ForegroundColor Red
+            }
+        } catch {
+            # Ignore errors reading response body
+        }
     }
 
+    Write-Host ""
+    Write-Host "Troubleshooting Tips:" -ForegroundColor Yellow
+    Write-Host "  1. Verify BC container is running: docker ps" -ForegroundColor Gray
+    Write-Host "  2. Check credentials match container config" -ForegroundColor Gray
+    Write-Host "  3. Verify API endpoint is accessible: curl $BaseUrl/api/v2.0/companies" -ForegroundColor Gray
+    Write-Host "  4. Check if extension is published with API page 50002" -ForegroundColor Gray
     Write-Host ""
     Write-Host "Full Error Details:" -ForegroundColor DarkRed
     Write-Host $_ -ForegroundColor DarkRed
