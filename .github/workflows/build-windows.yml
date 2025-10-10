@@ -146,7 +146,7 @@ jobs:
             
             # Compile extension using BcContainerHelper
             Write-Host "Compiling extension in container..."
-            Compile-AppInBcContainer -containerName $containerName -appProjectFolder "." -skipVerification
+            Compile-AppInBcContainer -containerName $containerName -appProjectFolder "."
             
             # Get the compiled app file
             $appFiles = Get-ChildItem -Path "." -Filter "*.app" -Recurse
