@@ -356,36 +356,31 @@ jobs:
         echo "PUBLISH_DURATION=$PUBLISH_DURATION" >> $GITHUB_ENV
         echo "Publishing took: $PUBLISH_DURATION seconds"
 
-    - name: Run AL Tests in Container
+    - name: Run AL Tests in Container via OData
       run: |
-        echo "Running AL tests in BC container..."
+        echo "Running AL tests in BC container via OData API..."
         TEST_START=$(date +%s.%N)
 
-        # TODO: Replace with actual test runner script when available
-        # Placeholder for test runner script call
-        # ./scripts/run-tests.sh
+        # Execute test codeunit via OData API using PowerShell script
+        # The script uses the Codeunit Run Request API (page 50002) to execute codeunit 50002 (Test CU)
+        # Note: OData port is 7048, SOAP/web services port is 7049
+        pwsh ./scripts/run-tests-odata.ps1 \
+          -BaseUrl "http://localhost:7048/BC" \
+          -Tenant "default" \
+          -Username "admin" \
+          -Password "P@ssw0rd123!" \
+          -CodeunitId 50002 \
+          -MaxWaitSeconds 300
 
-        echo "Running tests (placeholder - script not yet implemented)"
-
-        # Count test files for reporting
-        TEST_FILES=$(find src/Test -name "*.al" -type f 2>/dev/null | wc -l)
-        echo "TEST_FILE_COUNT=$TEST_FILES" >> $GITHUB_ENV
-
-        if [ "$TEST_FILES" -gt 0 ]; then
-            echo "Found $TEST_FILES test files:"
-            find src/Test -name "*.al" -type f | while read file; do
-                echo "  - $(basename "$file")"
-            done
-
-            echo "Tests would be executed here once script is available"
-        else
-            echo "No test files found"
-        fi
+        TEST_EXIT_CODE=$?
 
         TEST_END=$(date +%s.%N)
         TEST_DURATION=$(echo "$TEST_END - $TEST_START" | bc -l | sed 's/^\./0./')
         echo "TEST_DURATION=$TEST_DURATION" >> $GITHUB_ENV
         echo "Testing took: $TEST_DURATION seconds"
+
+        # Exit with the test script's exit code
+        exit $TEST_EXIT_CODE
 
     - name: Cleanup Container
       if: always()
