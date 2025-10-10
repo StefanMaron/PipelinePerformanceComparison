@@ -103,94 +103,23 @@ jobs:
         $artifactUrl = Get-BCArtifactUrl -type Sandbox -version $env:BC_VERSION -country w1 -select Latest
         Write-Host "Using artifact URL: $artifactUrl"
 
-        Write-Host "`n=== Docker Status Before Container Creation ==="
-        docker ps -a
-        docker images
-
-        # Start a monitoring job to watch Docker while New-BcContainer runs
-        $monitorJob = Start-Job -ScriptBlock {
-            param($containerName)
-            $iteration = 0
-            while ($true) {
-                $iteration++
-                Write-Host "`n--- Docker Monitor (iteration $iteration) ---"
-                Write-Host "Containers:"
-                docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-
-                # Check if container exists and show logs
-                $container = docker ps -a --filter "name=$containerName" --format "{{.ID}}"
-                if ($container) {
-                    Write-Host "`nContainer $containerName found! Logs (last 20 lines):"
-                    docker logs --tail 20 $container 2>&1
-                }
-
-                Start-Sleep -Seconds 10
-            }
-        } -ArgumentList $containerName
-
-        try {
-            # Create container with BcContainerHelper - will download artifacts automatically
-            $containerParams = @{
-                containerName = $containerName
-                artifactUrl = $artifactUrl
-                accept_eula = $true
-                auth = 'NavUserPassword'
-                includeTestToolkit = $true
-                includeTestLibrariesOnly = $true
-                enableSymbolLoading = $true
-                assignPremiumPlan = $true
-                memoryLimit = '8G'
-                isolation = 'process'
-                updateHosts = $true
-                timeout = 900
-            }
-
-            Write-Host "`n=== Starting Container Creation ==="
-            $VerbosePreference = 'Continue'
-            $bcJob = Start-Job -ScriptBlock {
-                param($params)
-                $VerbosePreference = 'Continue'
-                Import-Module BcContainerHelper -Force
-                New-BcContainer @params -Verbose
-            } -ArgumentList $containerParams
-
-            # Wait for the job with timeout
-            $timeout = 600 # 10 minutes
-            $elapsed = 0
-            while ($bcJob.State -eq 'Running' -and $elapsed -lt $timeout) {
-                Start-Sleep -Seconds 5
-                $elapsed += 5
-
-                # Show monitor output periodically
-                if ($elapsed % 30 -eq 0) {
-                    Write-Host "`n=== Monitor Output (${elapsed}s elapsed) ==="
-                    Receive-Job -Job $monitorJob
-                }
-            }
-
-            # Get final results
-            if ($bcJob.State -eq 'Completed') {
-                Write-Host "`n=== New-BcContainer Completed Successfully ==="
-                Receive-Job -Job $bcJob
-            } else {
-                Write-Host "`n=== New-BcContainer Timed Out or Failed (State: $($bcJob.State)) ==="
-                Write-Host "Last Monitor Output:"
-                Receive-Job -Job $monitorJob
-
-                # Try to get partial output
-                Receive-Job -Job $bcJob
-            }
-
-        } finally {
-            # Cleanup
-            Stop-Job -Job $monitorJob -ErrorAction SilentlyContinue
-            Remove-Job -Job $monitorJob -Force -ErrorAction SilentlyContinue
-            Stop-Job -Job $bcJob -ErrorAction SilentlyContinue
-            Remove-Job -Job $bcJob -Force -ErrorAction SilentlyContinue
+        # Create container with BcContainerHelper - will download artifacts automatically
+        $containerParams = @{
+            containerName = $containerName
+            artifactUrl = $artifactUrl
+            accept_eula = $true
+            auth = 'NavUserPassword'
+            includeTestToolkit = $true
+            includeTestLibrariesOnly = $true
+            enableSymbolLoading = $true
+            assignPremiumPlan = $true
+            memoryLimit = '8G'
+            isolation = 'process'
+            updateHosts = $true
+            timeout = 900
         }
 
-        Write-Host "`n=== Final Docker Status ==="
-        docker ps -a
+        New-BcContainer @containerParams -Verbose
 
         $containerEnd = Get-Date
         $containerDuration = ($containerEnd - $containerStart).TotalSeconds
