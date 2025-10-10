@@ -23,7 +23,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Record start time
-      shell: pwsh
+      shell: powershell
       run: |
         $startTime = Get-Date
         echo "BUILD_START_TIME=$($startTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))" >> $env:GITHUB_ENV
@@ -35,7 +35,7 @@ jobs:
         dotnet-version: '8.0.x'
 
     - name: Install BcContainerHelper and AL Language Extension
-      shell: pwsh
+      shell: powershell
       run: |
         Write-Host "Installing BcContainerHelper and AL Language Extension..."
         $installStart = Get-Date
@@ -57,7 +57,7 @@ jobs:
         Write-Host "Installation took: $installDuration seconds"
         
     - name: Verify installations
-      shell: pwsh
+      shell: powershell
       run: |
         Write-Host "Verifying installations..."
         Write-Host "Testing AL command..."
@@ -70,7 +70,7 @@ jobs:
         docker --version
 
     - name: Create dependencies directory
-      shell: pwsh
+      shell: powershell
       run: |
         if (-not (Test-Path ".alpackages")) {
             New-Item -ItemType Directory -Path ".alpackages"
@@ -78,7 +78,7 @@ jobs:
         }
 
     - name: Create BC Container
-      shell: pwsh
+      shell: powershell
       run: |
         Write-Host "Creating Business Central container..."
         $containerStart = Get-Date
@@ -115,7 +115,7 @@ jobs:
         Write-Host "Container creation took: $containerDuration seconds"
         
     - name: Compile and Publish AL Extension
-      shell: pwsh
+      shell: powershell
       run: |
         Write-Host "Compiling and publishing AL extension..."
         $compileStart = Get-Date
@@ -159,7 +159,7 @@ jobs:
         }
         
     - name: Run Tests
-      shell: pwsh
+      shell: powershell
       run: |
         Write-Host "Running tests in Business Central container..."
         $testStart = Get-Date
@@ -239,7 +239,7 @@ jobs:
         }
         
     - name: Cleanup Container
-      shell: pwsh
+      shell: powershell
       run: |
         Write-Host "Cleaning up BC container..."
         try {
@@ -253,7 +253,7 @@ jobs:
         }
         
     - name: Calculate total build time
-      shell: pwsh
+      shell: powershell
       run: |
         $endTime = Get-Date
         $startTime = [DateTime]::Parse($env:BUILD_START_TIME)
