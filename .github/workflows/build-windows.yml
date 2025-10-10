@@ -146,10 +146,12 @@ jobs:
             }
 
             Write-Host "`n=== Starting Container Creation ==="
+            $VerbosePreference = 'Continue'
             $bcJob = Start-Job -ScriptBlock {
                 param($params)
+                $VerbosePreference = 'Continue'
                 Import-Module BcContainerHelper -Force
-                New-BcContainer @params
+                New-BcContainer @params -Verbose
             } -ArgumentList $containerParams
 
             # Wait for the job with timeout
