@@ -103,12 +103,22 @@ jobs:
         $artifactUrl = Get-BCArtifactUrl -type Sandbox -version $env:BC_VERSION -country w1 -select Latest
         Write-Host "Using artifact URL: $artifactUrl"
 
+        # Create credentials
+        $password = ConvertTo-SecureString -String 'P@ssw0rd' -AsPlainText -Force
+        $credential = New-Object pscredential 'admin', $password
+
+        # Additional parameters for custom settings
+        $additionalParameters = @(
+            "--env CustomNavSettings=DisableWriteInsideTryFunctions=false"
+        )
+
         # Create container with BcContainerHelper - will download artifacts automatically
         $containerParams = @{
             containerName = $containerName
             artifactUrl = $artifactUrl
+            credential = $credential
             accept_eula = $true
-            auth = 'NavUserPassword'
+            auth = 'UserPassword'
             includeTestToolkit = $true
             includeTestLibrariesOnly = $true
             enableSymbolLoading = $true
@@ -117,6 +127,7 @@ jobs:
             isolation = 'process'
             updateHosts = $true
             timeout = 900
+            additionalParameters = $additionalParameters
         }
 
         New-BcContainer @containerParams -Verbose
