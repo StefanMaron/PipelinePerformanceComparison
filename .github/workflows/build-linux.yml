@@ -345,14 +345,14 @@ jobs:
         TEST_START=$(date +%s.%N)
 
         # Execute test codeunit via OData API using PowerShell script
-        # The script uses the Codeunit Run Request API (page 50002) to execute codeunit 50002 (Test CU)
+        # The script uses the Codeunit Run Request API (page 50002) to execute codeunit 50001 (Sample Data Tests PPC)
         # Note: OData port is 7048, SOAP/web services port is 7049
         pwsh ./scripts/run-tests-odata.ps1 \
           -BaseUrl "http://localhost:7048/BC" \
           -Tenant "default" \
           -Username "admin" \
           -Password "Admin123!" \
-          -CodeunitId 50002 \
+          -CodeunitId 50001 \
           -MaxWaitSeconds 300
 
         TEST_EXIT_CODE=$?
