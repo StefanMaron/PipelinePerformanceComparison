@@ -109,11 +109,12 @@ jobs:
         metrics_dir = Path('./metrics')
 
         # Find all JSON metrics files recursively
+        # Order determines column order in output table
         metrics_files = {
-            'Linux Full Test': 'linux-full-test-metrics.json',
             'Linux Compile-Only': 'linux-compile-only-metrics.json',
-            'Windows Full Test': 'windows-full-test-metrics.json',
-            'Windows Compile-Only': 'windows-compile-only-metrics.json'
+            'Linux Full Test': 'linux-full-test-metrics.json',
+            'Windows Compile-Only': 'windows-compile-only-metrics.json',
+            'Windows Full Test': 'windows-full-test-metrics.json'
         }
 
         data = {}
@@ -139,10 +140,10 @@ jobs:
         # Load GitHub Actions timings
         github_timings = {}
         github_timing_files = {
-            'Linux Full Test': 'github_timings/linux-full-test.json',
             'Linux Compile-Only': 'github_timings/linux-compile-only.json',
-            'Windows Full Test': 'github_timings/windows-full-test.json',
-            'Windows Compile-Only': 'github_timings/windows-compile-only.json'
+            'Linux Full Test': 'github_timings/linux-full-test.json',
+            'Windows Compile-Only': 'github_timings/windows-compile-only.json',
+            'Windows Full Test': 'github_timings/windows-full-test.json'
         }
 
         for pipeline_name, filename in github_timing_files.items():
@@ -255,8 +256,12 @@ jobs:
             **{name: f"{metrics.get('total_app_size_kb', 0):.2f} KB" for name, metrics in data.items()}
         })
 
-        # Create DataFrame
+        # Create DataFrame with explicit column order
+        column_order = ['Phase', 'Linux Compile-Only', 'Linux Full Test', 'Windows Compile-Only', 'Windows Full Test']
+        # Filter to only include columns that exist in the data
+        available_columns = ['Phase'] + [col for col in column_order[1:] if col in data.keys()]
         df = pd.DataFrame(comparison_data)
+        df = df[available_columns]
 
         # Generate Markdown table
         print("\n" + "="*100)
