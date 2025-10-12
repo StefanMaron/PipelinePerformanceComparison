@@ -68,6 +68,54 @@ table 50002 "Log Table"
             DataClassification = ToBeClassified;
         }
 
+        /// <summary>
+        /// The ID of the codeunit that was executed.
+        /// </summary>
+        field(4; "Codeunit ID"; Integer)
+        {
+            DataClassification = SystemMetadata;
+        }
+
+        /// <summary>
+        /// The name of the codeunit that was executed.
+        /// </summary>
+        field(5; "Codeunit Name"; Text[250])
+        {
+            DataClassification = SystemMetadata;
+        }
+
+        /// <summary>
+        /// The name of the test function that was executed.
+        /// </summary>
+        field(6; "Function Name"; Text[250])
+        {
+            DataClassification = SystemMetadata;
+        }
+
+        /// <summary>
+        /// Indicates whether the test execution was successful.
+        /// </summary>
+        field(8; "Success"; Boolean)
+        {
+            DataClassification = SystemMetadata;
+        }
+
+        /// <summary>
+        /// Error message from failed test execution (truncated to 2048 chars).
+        /// </summary>
+        field(9; "Error Message"; Text[2048])
+        {
+            DataClassification = SystemMetadata;
+        }
+
+        /// <summary>
+        /// Call stack from failed test execution (truncated to 2048 chars).
+        /// </summary>
+        field(10; "Call Stack"; Text[2048])
+        {
+            DataClassification = SystemMetadata;
+        }
+
     }
 
     keys

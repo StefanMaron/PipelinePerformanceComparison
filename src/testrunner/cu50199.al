@@ -21,6 +21,12 @@
 /// </summary>
 codeunit 50003 "Test Runner API"
 {
+    Subtype = TestRunner;
+
+    var
+        CurrCodeunitId: Integer;
+        TestCodeunitResult: Boolean;
+
     /// <summary>
     /// Executes any codeunit by its ID and returns execution status.
     /// </summary>
@@ -35,6 +41,30 @@ codeunit 50003 "Test Runner API"
     /// - Captures and returns any error messages from failed executions
     /// - Does not validate whether the codeunit exists before attempting to run
     /// </remarks>
+
+    procedure SetCodeunitId(CodeunitId: Integer)
+    begin
+        CurrCodeunitId := CodeunitId;
+    end;
+
+    trigger OnRun()
+    var
+        Log: Record "Log Table";
+    begin
+        // Clear previous test logs before starting new test run
+        Log.DeleteAll(false);
+        Commit(); // Commit the deletion and prepare for test execution
+
+        ClearLastError();
+        TestCodeunitResult := Codeunit.Run(CurrCodeunitId);
+    end;
+
+    procedure GetTestCodeunitResult(): Boolean
+    begin
+        exit(TestCodeunitResult);
+    end;
+
+
     procedure RunCodeunit(CodeunitId: Integer): Text
     var
         Success: Boolean;
@@ -48,7 +78,8 @@ codeunit 50003 "Test Runner API"
         ClearLastError();
         Commit(); // Commit any pending transactions before running
 
-        if Codeunit.Run(CodeunitId) then
+        this.SetCodeunitId(CodeunitId);
+        if this.Run() then
             exit(StrSubstNo('SUCCESS: Codeunit %1 executed successfully', CodeunitId))
         else begin
             ErrorText := GetLastErrorText();
@@ -176,5 +207,29 @@ codeunit 50003 "Test Runner API"
         AllObjWithCaption.SetRange("Object Type", AllObjWithCaption."Object Type"::Codeunit);
         AllObjWithCaption.SetRange("Object ID", CodeunitId);
         exit(AllObjWithCaption.FindFirst());
+    end;
+
+    trigger OnAfterTestRun(CodeunitId: Integer; CodeunitName: Text; FunctionName: Text; Permissions: TestPermissions; Success: Boolean)
+    var
+        Log: Record "Log Table";
+        ErrorText: Text;
+        CallStackText: Text;
+    begin
+        Log.Init();
+        Log."Codeunit ID" := CodeunitId;
+        Log."Codeunit Name" := CopyStr(CodeunitName, 1, 250);
+        Log."Function Name" := CopyStr(FunctionName, 1, 250);
+        Log."Success" := Success;
+
+        // Capture error details if test failed
+        if not Success then begin
+            ErrorText := GetLastErrorText();
+            CallStackText := GetLastErrorCallStack();
+
+            Log."Error Message" := CopyStr(ErrorText, 1, 2048);
+            Log."Call Stack" := CopyStr(CallStackText, 1, 2048);
+        end;
+
+        Log.Insert(false);
     end;
 }

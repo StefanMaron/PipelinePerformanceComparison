@@ -5,6 +5,8 @@ codeunit 50001 "Sample Data Tests PPC"
 {
     Subtype = Test;
     TestPermissions = Disabled;
+    Permissions = tabledata "Sample Data Line PPC" = rimd,
+                  tabledata "Sample Data PPC" = rimd;
 
     [Test]
     procedure TestGenerateSampleData()
@@ -12,21 +14,21 @@ codeunit 50001 "Sample Data Tests PPC"
         SampleData: Record "Sample Data PPC";
         SampleLine: Record "Sample Data Line PPC";
         SampleDataMgmt: Codeunit "Sample Data Management PPC";
-        InitialDataCount: Integer;
-        InitialLineCount: Integer;
     begin
-        // Setup
-        InitialDataCount := SampleData.Count();
-        InitialLineCount := SampleLine.Count();
+        // Setup - Clean existing data
+        SampleDataMgmt.ClearAllData();
 
         // Exercise
         SampleDataMgmt.GenerateSampleData();
 
         // Verify
-        if SampleData.Count() <= InitialDataCount then
-            Error('Sample data was not generated as expected');
-        if SampleLine.Count() <= InitialLineCount then
-            Error('Sample lines were not generated as expected');
+        if SampleData.Count() = 0 then
+            Error('Sample data was not generated');
+        if SampleLine.Count() = 0 then
+            Error('Sample lines were not generated');
+
+        // Cleanup
+        SampleDataMgmt.ClearAllData();
     end;
 
     [Test]
@@ -36,12 +38,14 @@ codeunit 50001 "Sample Data Tests PPC"
         SampleLine: Record "Sample Data Line PPC";
         SampleDataMgmt: Codeunit "Sample Data Management PPC";
     begin
-        // Setup - Ensure we have some data
+        // Setup - Clean and generate data
+        SampleDataMgmt.ClearAllData();
         SampleDataMgmt.GenerateSampleData();
         if SampleData.Count() = 0 then
             Error('No sample data was generated');
         if SampleLine.Count() = 0 then
             Error('No sample lines were generated');
+
         // Exercise
         SampleDataMgmt.ClearAllData();
 
@@ -58,7 +62,8 @@ codeunit 50001 "Sample Data Tests PPC"
         SampleDataMgmt: Codeunit "Sample Data Management PPC";
         ProcessedCount: Integer;
     begin
-        // Setup
+        // Setup - Clean and generate data
+        SampleDataMgmt.ClearAllData();
         SampleDataMgmt.GenerateSampleData();
 
         // Exercise
@@ -67,6 +72,9 @@ codeunit 50001 "Sample Data Tests PPC"
         // Verify
         if ProcessedCount <= 0 then
             Error('Should process at least one record');
+
+        // Cleanup
+        SampleDataMgmt.ClearAllData();
     end;
 
     [Test]
@@ -74,7 +82,10 @@ codeunit 50001 "Sample Data Tests PPC"
     var
         SampleData: Record "Sample Data PPC";
     begin
-        // Setup
+        // Setup - Clean any existing TEST001 record
+        SampleData.SetRange("Code", 'TEST001');
+        SampleData.DeleteAll(false);
+
         SampleData.Init();
         SampleData."Code" := 'TEST001';
         SampleData."Description" := 'Test Description';
@@ -83,11 +94,11 @@ codeunit 50001 "Sample Data Tests PPC"
         SampleData."Status" := "Sample Status PPC"::Open;
 
         // Exercise & Verify
-        if not SampleData.Insert() then
+        if not SampleData.Insert(false) then
             Error('Should be able to insert valid sample data');
 
         // Cleanup
-        SampleData.Delete();
+        SampleData.Delete(false);
     end;
 
     [Test]
@@ -96,7 +107,11 @@ codeunit 50001 "Sample Data Tests PPC"
         SampleLine: Record "Sample Data Line PPC";
         ExpectedAmount: Decimal;
     begin
-        // Setup
+        // Setup - Clean any existing TEST001 line
+        SampleLine.SetRange("Document No.", 'TEST001');
+        SampleLine.SetRange("Line No.", 10000);
+        SampleLine.DeleteAll(false);
+
         SampleLine.Init();
         SampleLine."Document No." := 'TEST001';
         SampleLine."Line No." := 10000;
@@ -110,5 +125,8 @@ codeunit 50001 "Sample Data Tests PPC"
         ExpectedAmount := 10 * 25.50;
         if ExpectedAmount <> SampleLine."Amount" then
             Error('Amount calculation is incorrect. Expected: %1, Actual: %2', ExpectedAmount, SampleLine."Amount");
+
+        // Cleanup
+        SampleLine.Delete(false);
     end;
 }

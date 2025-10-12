@@ -217,7 +217,10 @@ page 50002 "Codeunit Run Requests"
     [ServiceEnabled]
     procedure RunCodeunit(): Boolean
     var
+        TestRunnerAPI: Codeunit "Test Runner API";
+        Log: Record "Log Table";
         Success: Boolean;
+        FailedTests: Integer;
     begin
         Rec.TestField(CodeunitId);
         if Rec.Status = Rec.Status::Running then
@@ -226,19 +229,34 @@ page 50002 "Codeunit Run Requests"
         Rec.Status := Rec.Status::Running;
         Rec.Modify(true);
 
-        // Attempt to run the specified codeunit (no parameters).
-        Success := Codeunit.Run(Rec.CodeunitId);
+        // Use the Test Runner API to execute the codeunit
+        // This properly handles both test codeunits (Subtype = Test) and regular codeunits
+        ClearLastError();
+        Commit(); // Required before running test codeunits to ensure clean transaction state
 
-        if Success then begin
+        TestRunnerAPI.SetCodeunitId(Rec.CodeunitId);
+        Success := TestRunnerAPI.Run();
+
+        // Check if any individual tests failed
+        Log.SetRange(Success, false);
+        FailedTests := Log.Count();
+
+        if Success and (FailedTests = 0) then begin
             Rec.Status := Rec.Status::Finished;
             Rec.LastResult := 'Success';
         end else begin
             Rec.Status := Rec.Status::Error;
-            Rec.LastResult := GetLastErrorText();
+            if FailedTests > 0 then
+                Rec.LastResult := StrSubstNo('%1 test(s) failed - check logs for details', FailedTests)
+            else begin
+                Rec.LastResult := CopyStr(GetLastErrorText(), 1, 250);
+                if Rec.LastResult = '' then
+                    Rec.LastResult := 'Unknown error - check logs for details';
+            end;
         end;
 
         Rec.LastExecutionUTC := CurrentDateTime();
         Rec.Modify(true);
-        exit(Success);
+        exit(Success and (FailedTests = 0));
     end;
 }

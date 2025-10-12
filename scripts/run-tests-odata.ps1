@@ -21,13 +21,13 @@
     Password for authentication (default: "P@ssw0rd123!")
 
 .PARAMETER CodeunitId
-    The ID of the test codeunit to execute (default: 50002 - "Test CU")
+    The ID of the test codeunit to execute (default: 50001 - "Sample Data Tests PPC")
 
 .PARAMETER MaxWaitSeconds
     Maximum time to wait for test execution to complete (default: 300 seconds)
 
 .EXAMPLE
-    ./run-tests-odata.ps1 -BaseUrl "http://localhost:7048/BC" -CodeunitId 50002
+    ./run-tests-odata.ps1 -BaseUrl "http://localhost:7048/BC" -CodeunitId 50001
 
 .NOTES
     API Endpoint: /api/custom/automation/v1.0/codeunitRunRequests
@@ -48,7 +48,7 @@ param(
     [string]$Password = "Admin123!",
 
     [Parameter(Mandatory=$false)]
-    [int]$CodeunitId = 50002,
+    [int]$CodeunitId = 50001,
 
     [Parameter(Mandatory=$false)]
     [int]$MaxWaitSeconds = 300
@@ -113,6 +113,7 @@ try {
     Write-Host "[1/4] Creating execution request..." -ForegroundColor Yellow
 
     # Step 1: Create a new Codeunit Run Request
+    Write-Host "  Creating request for Codeunit ID: $CodeunitId" -ForegroundColor Gray
     $RequestBody = @{
         CodeunitId = $CodeunitId
     } | ConvertTo-Json
@@ -195,22 +196,59 @@ try {
     Write-Host "  Total Wait Time: $([Math]::Round($ElapsedSeconds, 2)) seconds" -ForegroundColor Gray
     Write-Host ""
 
-    # Step 4: Check Log Table via OData (if available)
-    Write-Host "[BONUS] Checking execution logs..." -ForegroundColor Yellow
+    # Step 5: Check Log Table via OData
+    Write-Host "[5/5] Retrieving execution logs..." -ForegroundColor Yellow
 
     try {
-        # Note: This assumes you have an API page exposing the Log Table
-        # You may need to create one or skip this step
-        $LogApiUrl = "$BaseUrl/api/v2.0/companies(default)/logEntries?\$top=5&\$orderby=entryNo desc"
+        # Access the Log Entries API (no filters, just get all entries)
+        $LogApiUrl = "$BaseUrl/api/custom/automation/v1.0/companies($CompanyId)/logEntries"
 
-        Write-Host "  (Skipping log retrieval - API page for Log Table not yet implemented)" -ForegroundColor Gray
-        # Uncomment when Log Table API is available:
-        # $LogResponse = Invoke-RestMethod -Uri $LogApiUrl -Method Get -Credential $Credential -Headers $Headers -AllowUnencryptedAuthentication -TimeoutSec 30
-        # $LogResponse.value | ForEach-Object {
-        #     Write-Host "  Log: $($_.'message') - Computer: $($_.'computerName')" -ForegroundColor Gray
-        # }
+        $LogResponse = Invoke-RestMethod -Uri $LogApiUrl `
+            -Method Get `
+            -Headers $Headers `
+            -AllowUnencryptedAuthentication `
+            -SkipHttpErrorCheck `
+            -TimeoutSec 30
+
+        if ($LogResponse.value -and $LogResponse.value.Count -gt 0) {
+            Write-Host "✓ Found $($LogResponse.value.Count) log entries:" -ForegroundColor Green
+            $LogResponse.value | ForEach-Object {
+                # Handle both types of logs: manual logs (with Message) and test runner logs (with test details)
+                if ($_.message -and $_.message -ne "") {
+                    # Manual log entry
+                    Write-Host "  [Entry $($_.entryNo)] $($_.message)" -ForegroundColor Cyan
+                    if ($_.computerName -and $_.computerName -ne "") {
+                        Write-Host "    Computer: $($_.computerName)" -ForegroundColor Gray
+                    }
+                } elseif ($_.codeunitName -and $_.codeunitName -ne "") {
+                    # Test runner log entry
+                    $statusIcon = if ($_.success) { "✓" } else { "✗" }
+                    $statusColor = if ($_.success) { "Green" } else { "Red" }
+                    Write-Host "  $statusIcon [Entry $($_.entryNo)] Test: $($_.codeunitName)::$($_.functionName)" -ForegroundColor $statusColor
+                    Write-Host "    Codeunit ID: $($_.codeunitId)" -ForegroundColor Gray
+
+                    # Show error details for failed tests
+                    if (-not $_.success -and $_.errorMessage -and $_.errorMessage -ne "") {
+                        Write-Host "    Error: $($_.errorMessage)" -ForegroundColor Red
+                        if ($_.callStack -and $_.callStack -ne "") {
+                            Write-Host "    Call Stack:" -ForegroundColor Gray
+                            # Display first 3 lines of call stack to keep output manageable
+                            $stackLines = $_.callStack -split "`n" | Select-Object -First 3
+                            foreach ($line in $stackLines) {
+                                Write-Host "      $line" -ForegroundColor DarkGray
+                            }
+                        }
+                    }
+                } else {
+                    # Fallback for incomplete log entries
+                    Write-Host "  [Entry $($_.entryNo)] (no details logged)" -ForegroundColor DarkGray
+                }
+            }
+        } else {
+            Write-Host "  No log entries found" -ForegroundColor Gray
+        }
     } catch {
-        Write-Host "  (Could not retrieve logs: $($_.Exception.Message))" -ForegroundColor DarkGray
+        Write-Host "✗ Could not retrieve logs: $($_.Exception.Message)" -ForegroundColor Red
     }
 
     Write-Host ""
