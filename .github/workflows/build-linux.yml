@@ -51,40 +51,26 @@ jobs:
       with:
         dotnet-version: '8.0.x'
 
-    - name: Record .NET setup completion
-      run: |
-        DOTNET_SETUP_END=$(date +%s.%N)
-        DOTNET_SETUP_DURATION=$(echo "$DOTNET_SETUP_END - $BUILD_START_EPOCH" | bc -l | sed 's/^\./0./')
-        echo "DOTNET_SETUP_DURATION=$DOTNET_SETUP_DURATION" >> $GITHUB_ENV
-        echo ".NET setup took: $DOTNET_SETUP_DURATION seconds"
-
     - name: Install BC Development Tools for Linux
       run: |
         echo "Installing BC Development Tools for Linux..."
-        INSTALL_START=$(date +%s.%N)
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools.Linux --version 16.0.24.41895-beta
 
         # Ensure dotnet tools are in PATH
         export PATH="$PATH:$HOME/.dotnet/tools"
         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-        INSTALL_END=$(date +%s.%N)
-        INSTALL_DURATION=$(echo "$INSTALL_END - $INSTALL_START" | bc -l | sed 's/^\./0./')
-        echo "AL_INSTALL_DURATION=$INSTALL_DURATION" >> $GITHUB_ENV
-        echo "BC Development Tools for Linux installation took: $INSTALL_DURATION seconds"
-
     - name: Verify BC Development Tools installation
       run: |
         echo "Verifying BC Development Tools installation..."
-        VERIFY_START=$(date +%s.%N)
 
         # Test AL command directly (ignore exit code since AL --version returns 1)
         AL --version || true
 
-        VERIFY_END=$(date +%s.%N)
-        VERIFY_DURATION=$(echo "$VERIFY_END - $VERIFY_START" | bc -l | sed 's/^\./0./')
-        echo "AL_VERIFY_DURATION=$VERIFY_DURATION" >> $GITHUB_ENV
-        echo "BC Development Tools verification took: $VERIFY_DURATION seconds"
+        SETUP_END=$(date +%s.%N)
+        SETUP_DURATION=$(echo "$SETUP_END - $BUILD_START_EPOCH" | bc -l | sed 's/^\./0./')
+        echo "SETUP_DURATION=$SETUP_DURATION" >> $GITHUB_ENV
+        echo "Setup (.NET + AL tools + verification) took: $SETUP_DURATION seconds"
 
     - name: Create dependencies directory
       run: |
@@ -411,9 +397,7 @@ jobs:
         echo "Build End Time: $END_TIME"
         echo ""
         echo "=== DETAILED TIMINGS ==="
-        echo ".NET Setup: $DOTNET_SETUP_DURATION seconds"
-        echo "AL Installation: $AL_INSTALL_DURATION seconds"
-        echo "AL Verification: $AL_VERIFY_DURATION seconds"
+        echo "Setup (.NET + AL tools): $SETUP_DURATION seconds"
         echo "Directory Creation: $DIR_CREATION_DURATION seconds"
         echo "System App Download: $SYSTEM_DOWNLOAD_DURATION seconds"
         echo "System App Extract: $SYSTEM_EXTRACT_DURATION seconds"
@@ -443,9 +427,7 @@ jobs:
           "platform": "linux-full-test",
           "runner_os": "ubuntu-latest",
           "total_duration": $TOTAL_DURATION,
-          "dotnet_setup_duration": ${DOTNET_SETUP_DURATION:-0},
-          "al_install_duration": ${AL_INSTALL_DURATION:-0},
-          "al_verify_duration": ${AL_VERIFY_DURATION:-0},
+          "setup_duration": ${SETUP_DURATION:-0},
           "dir_creation_duration": ${DIR_CREATION_DURATION:-0},
           "system_download_duration": ${SYSTEM_DOWNLOAD_DURATION:-0},
           "system_extract_duration": ${SYSTEM_EXTRACT_DURATION:-0},
@@ -487,9 +469,7 @@ jobs:
           "start_time": "$BUILD_START_TIME",
           "end_time": "$END_TIME",
           "measurements": [
-            {"stage": "dotnet_setup", "duration": ${DOTNET_SETUP_DURATION:-0}, "unit": "seconds"},
-            {"stage": "al_install", "duration": ${AL_INSTALL_DURATION:-0}, "unit": "seconds"},
-            {"stage": "al_verify", "duration": ${AL_VERIFY_DURATION:-0}, "unit": "seconds"},
+            {"stage": "setup", "duration": ${SETUP_DURATION:-0}, "unit": "seconds"},
             {"stage": "dir_creation", "duration": ${DIR_CREATION_DURATION:-0}, "unit": "seconds"},
             {"stage": "system_download", "duration": ${SYSTEM_DOWNLOAD_DURATION:-0}, "unit": "seconds"},
             {"stage": "system_extract", "duration": ${SYSTEM_EXTRACT_DURATION:-0}, "unit": "seconds"},

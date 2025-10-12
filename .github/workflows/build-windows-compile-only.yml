@@ -32,48 +32,32 @@ jobs:
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
-        
-    - name: Record .NET setup completion
-      shell: powershell
-      run: |
-        $dotnetSetupTime = Get-Date
-        $startTime = [DateTime]::Parse($env:BUILD_START_TIME)
-        $dotnetSetupDuration = ($dotnetSetupTime - $startTime).TotalSeconds
-        echo "DOTNET_SETUP_DURATION=$dotnetSetupDuration" >> $env:GITHUB_ENV
-        Write-Host ".NET setup took: $dotnetSetupDuration seconds"
-        
+
     - name: Install BC Development Tools
       shell: powershell
       run: |
         Write-Host "Installing BC Development Tools..."
-        $installStart = Get-Date
+        $setupStart = Get-Date
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools --version 16.0.24.41895-beta
-        $installEnd = Get-Date
-        $installDuration = ($installEnd - $installStart).TotalSeconds
-        echo "AL_INSTALL_DURATION=$installDuration" >> $env:GITHUB_ENV
-        Write-Host "BC Development Tools installation took: $installDuration seconds"
-        
-    - name: Verify BC Development Tools installation
-      shell: powershell
-      run: |
+
+        # Verify BC Development Tools installation
         Write-Host "Verifying BC Development Tools installation..."
-        $verifyStart = Get-Date
-        
+
         # Test AL command directly (handle exit code properly)
         Write-Host "Testing AL command..."
         $ErrorActionPreference = "Continue"
         AL --version
         $ErrorActionPreference = "Stop"
         Write-Host "AL command verified successfully"
-        
+
         # Add a successful command to override AL's exit code 1
         Write-Host "PowerShell version: $($PSVersionTable.PSVersion)"
-        
-        $verifyEnd = Get-Date
-        $verifyDuration = ($verifyEnd - $verifyStart).TotalSeconds
-        echo "AL_VERIFY_DURATION=$verifyDuration" >> $env:GITHUB_ENV
-        Write-Host "BC Development Tools verification took: $verifyDuration seconds"
-        
+
+        $setupEnd = Get-Date
+        $setupDuration = ($setupEnd - $setupStart).TotalSeconds
+        echo "SETUP_DURATION=$setupDuration" >> $env:GITHUB_ENV
+        Write-Host "Setup (.NET + AL tools) took: $setupDuration seconds"
+
         # Explicitly set exit code to success
         exit 0
         
@@ -295,7 +279,7 @@ jobs:
       shell: powershell
       run: |
         $analysisStart = Get-Date
-        
+
         # List compiled files
         if (Test-Path "bin") {
             Write-Host "Compiled files:"
@@ -305,7 +289,7 @@ jobs:
                 Write-Host "  $($file.Name) - ${size} KB"
             }
             echo "APP_COUNT=$($appFiles.Count)" >> $env:GITHUB_ENV
-            
+
             if ($appFiles.Count -gt 0) {
                 $totalSize = ($appFiles | Measure-Object -Property Length -Sum).Sum
                 $totalSizeKB = [math]::Round($totalSize / 1KB, 2)
@@ -313,41 +297,12 @@ jobs:
                 Write-Host "Total app size: ${totalSizeKB} KB"
             }
         }
-        
+
         $analysisEnd = Get-Date
         $analysisDuration = ($analysisEnd - $analysisStart).TotalSeconds
         echo "POST_COMPILE_ANALYSIS_DURATION=$analysisDuration" >> $env:GITHUB_ENV
         Write-Host "Post-compilation analysis: $analysisDuration seconds"
-        
-    - name: Mock Test Validation
-      shell: powershell
-      run: |
-        Write-Host "Running mock test validation..."
-        $testStart = Get-Date
-        
-        # Count test files
-        $testFiles = Get-ChildItem -Path "src\Test" -Filter "*.al" -Recurse -ErrorAction SilentlyContinue
-        $testCount = if ($testFiles) { $testFiles.Count } else { 0 }
-        echo "TEST_FILE_COUNT=$testCount" >> $env:GITHUB_ENV
-        
-        if ($testCount -gt 0) {
-            Write-Host "Found $testCount test files:"
-            foreach ($file in $testFiles) {
-                Write-Host "  - $($file.Name)"
-            }
-            
-            # Simulate test processing time
-            Start-Sleep -Milliseconds 100
-            Write-Host "Mock test validation completed successfully"
-        } else {
-            Write-Host "No test files found"
-        }
-        
-        $testEnd = Get-Date
-        $testDuration = ($testEnd - $testStart).TotalSeconds
-        echo "TEST_DURATION=$testDuration" >> $env:GITHUB_ENV
-        Write-Host "Mock testing took: $testDuration seconds"
-        
+
     - name: Calculate comprehensive build metrics
       shell: powershell  
       run: |
@@ -360,9 +315,7 @@ jobs:
         Write-Host "Build End Time: $($endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))"
         Write-Host ""
         Write-Host "=== DETAILED TIMINGS ==="
-        Write-Host ".NET Setup: $env:DOTNET_SETUP_DURATION seconds"
-        Write-Host "AL Installation: $env:AL_INSTALL_DURATION seconds"
-        Write-Host "AL Verification: $env:AL_VERIFY_DURATION seconds"
+        Write-Host "Setup (.NET + AL tools): $env:SETUP_DURATION seconds"
         Write-Host "Directory Creation: $env:DIR_CREATION_DURATION seconds"
         Write-Host "System App Download: $env:SYSTEM_DOWNLOAD_DURATION seconds"
         Write-Host "System App Extract: $env:SYSTEM_EXTRACT_DURATION seconds"
@@ -372,22 +325,18 @@ jobs:
         Write-Host "Pre-compile Setup: $env:PRECOMPILE_SETUP_DURATION seconds"
         Write-Host "Compilation: $env:COMPILE_DURATION seconds"
         Write-Host "Post-compile Analysis: $env:POST_COMPILE_ANALYSIS_DURATION seconds"
-        Write-Host "Mock Testing: $env:TEST_DURATION seconds"
         Write-Host ""
         Write-Host "=== BUILD SUMMARY ==="
         Write-Host "Total Build Time: $totalDuration seconds"
         if ($env:APP_COUNT) { Write-Host "Apps Generated: $env:APP_COUNT" }
         if ($env:TOTAL_APP_SIZE_KB) { Write-Host "Total App Size: $env:TOTAL_APP_SIZE_KB KB" }
-        if ($env:TEST_FILE_COUNT) { Write-Host "Test Files Found: $env:TEST_FILE_COUNT" }
         
         # Save comprehensive metrics for comparison
         $metrics = @{
             platform = "windows-compile-only"
             runner_os = "windows-2022"
             total_duration = $totalDuration
-            dotnet_setup_duration = [double]$env:DOTNET_SETUP_DURATION
-            al_install_duration = [double]$env:AL_INSTALL_DURATION
-            al_verify_duration = [double]$env:AL_VERIFY_DURATION
+            setup_duration = [double]$env:SETUP_DURATION
             dir_creation_duration = [double]$env:DIR_CREATION_DURATION
             system_download_duration = [double]$env:SYSTEM_DOWNLOAD_DURATION
             system_extract_duration = [double]$env:SYSTEM_EXTRACT_DURATION
@@ -397,10 +346,8 @@ jobs:
             precompile_setup_duration = [double]$env:PRECOMPILE_SETUP_DURATION
             compile_duration = [double]$env:COMPILE_DURATION
             post_compile_analysis_duration = [double]$env:POST_COMPILE_ANALYSIS_DURATION
-            test_duration = [double]$env:TEST_DURATION
             app_count = if ($env:APP_COUNT) { [int]$env:APP_COUNT } else { 0 }
             total_app_size_kb = if ($env:TOTAL_APP_SIZE_KB) { [double]$env:TOTAL_APP_SIZE_KB } else { 0 }
-            test_file_count = if ($env:TEST_FILE_COUNT) { [int]$env:TEST_FILE_COUNT } else { 0 }
             timestamp = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
             uses_container = $false
             pipeline_type = "compile-only"
@@ -422,9 +369,7 @@ jobs:
             start_time = $env:BUILD_START_TIME
             end_time = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
             measurements = @(
-                @{ stage = "dotnet_setup"; duration = [double]$env:DOTNET_SETUP_DURATION; unit = "seconds" }
-                @{ stage = "al_install"; duration = [double]$env:AL_INSTALL_DURATION; unit = "seconds" }
-                @{ stage = "al_verify"; duration = [double]$env:AL_VERIFY_DURATION; unit = "seconds" }
+                @{ stage = "setup"; duration = [double]$env:SETUP_DURATION; unit = "seconds" }
                 @{ stage = "dir_creation"; duration = [double]$env:DIR_CREATION_DURATION; unit = "seconds" }
                 @{ stage = "system_download"; duration = [double]$env:SYSTEM_DOWNLOAD_DURATION; unit = "seconds" }
                 @{ stage = "system_extract"; duration = [double]$env:SYSTEM_EXTRACT_DURATION; unit = "seconds" }
@@ -433,7 +378,6 @@ jobs:
                 @{ stage = "precompile_setup"; duration = [double]$env:PRECOMPILE_SETUP_DURATION; unit = "seconds" }
                 @{ stage = "compile"; duration = [double]$env:COMPILE_DURATION; unit = "seconds" }
                 @{ stage = "post_compile_analysis"; duration = [double]$env:POST_COMPILE_ANALYSIS_DURATION; unit = "seconds" }
-                @{ stage = "mock_test"; duration = [double]$env:TEST_DURATION; unit = "seconds" }
             )
             totals = @{
                 total_duration = $totalDuration
@@ -442,7 +386,6 @@ jobs:
             artifacts = @{
                 app_count = if ($env:APP_COUNT) { [int]$env:APP_COUNT } else { 0 }
                 total_app_size_kb = if ($env:TOTAL_APP_SIZE_KB) { [double]$env:TOTAL_APP_SIZE_KB } else { 0 }
-                test_file_count = if ($env:TEST_FILE_COUNT) { [int]$env:TEST_FILE_COUNT } else { 0 }
             }
             environment = @{
                 github_actions = $true

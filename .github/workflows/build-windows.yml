@@ -38,7 +38,7 @@ jobs:
       shell: powershell
       run: |
         Write-Host "Installing BcContainerHelper and BC Development Tools..."
-        $installStart = Get-Date
+        $setupStart = Get-Date
 
         # Install BcContainerHelper
         Write-Host "Installing BcContainerHelper module..."
@@ -63,31 +63,35 @@ jobs:
         Write-Host "Installing BC Development Tools..."
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools --version 16.0.24.41895-beta
 
-        $installEnd = Get-Date
-        $installDuration = ($installEnd - $installStart).TotalSeconds
-        echo "AL_INSTALL_DURATION=$installDuration" >> $env:GITHUB_ENV
-        Write-Host "Installation took: $installDuration seconds"
-        
-    - name: Verify installations
-      shell: powershell
-      run: |
+        # Verify installations
         Write-Host "Verifying installations..."
         Write-Host "Testing AL command..."
         $ErrorActionPreference = "Continue"
         AL --version
         $ErrorActionPreference = "Stop"
         Write-Host "AL command verified successfully"
+
         Get-Module BcContainerHelper -ListAvailable | Select-Object Name, Version
         Write-Host "Docker version:"
         docker --version
 
+        $setupEnd = Get-Date
+        $setupDuration = ($setupEnd - $setupStart).TotalSeconds
+        echo "SETUP_DURATION=$setupDuration" >> $env:GITHUB_ENV
+        Write-Host "Setup (.NET + BcContainerHelper + AL tools) took: $setupDuration seconds"
+
     - name: Create dependencies directory
       shell: powershell
       run: |
+        $dirStart = Get-Date
         if (-not (Test-Path ".alpackages")) {
             New-Item -ItemType Directory -Path ".alpackages"
             Write-Host "Created .alpackages directory"
         }
+        $dirEnd = Get-Date
+        $dirDuration = ($dirEnd - $dirStart).TotalSeconds
+        echo "DIR_CREATION_DURATION=$dirDuration" >> $env:GITHUB_ENV
+        Write-Host "Directory creation took: $dirDuration seconds"
 
     - name: Download BC Symbol Packages
       shell: powershell
@@ -167,6 +171,18 @@ jobs:
             echo "SYMBOLS_DOWNLOAD_DURATION=0" >> $env:GITHUB_ENV
         }
 
+    - name: Calculate total dependency time
+      shell: powershell
+      run: |
+        # Calculate total time for BC symbol downloads
+        $systemDownload = if ($env:SYMBOLS_DOWNLOAD_DURATION) { [double]$env:SYMBOLS_DOWNLOAD_DURATION } else { 0 }
+        echo "SYSTEM_DOWNLOAD_DURATION=$systemDownload" >> $env:GITHUB_ENV
+        echo "SYSTEM_EXTRACT_DURATION=0" >> $env:GITHUB_ENV
+        echo "BASE_DOWNLOAD_DURATION=0" >> $env:GITHUB_ENV
+        echo "BASE_EXTRACT_DURATION=0" >> $env:GITHUB_ENV
+        echo "TOTAL_DEPENDENCY_DURATION=$systemDownload" >> $env:GITHUB_ENV
+        Write-Host "Total dependency handling: $systemDownload seconds"
+
     - name: Create BC Container
       shell: powershell
       run: |
@@ -212,7 +228,20 @@ jobs:
         $containerDuration = ($containerEnd - $containerStart).TotalSeconds
         echo "CONTAINER_CREATION_DURATION=$containerDuration" >> $env:GITHUB_ENV
         Write-Host "Container creation took: $containerDuration seconds"
-        
+
+    - name: Pre-compilation setup
+      shell: powershell
+      run: |
+        $setupStart = Get-Date
+        # Create bin directory if it doesn't exist
+        if (-not (Test-Path "bin")) {
+            New-Item -ItemType Directory -Path "bin" | Out-Null
+        }
+        $setupEnd = Get-Date
+        $setupDuration = ($setupEnd - $setupStart).TotalSeconds
+        echo "PRECOMPILE_SETUP_DURATION=$setupDuration" >> $env:GITHUB_ENV
+        Write-Host "Pre-compilation setup: $setupDuration seconds"
+
     - name: Compile AL Extension with AL Compiler
       shell: powershell
       run: |
@@ -220,11 +249,6 @@ jobs:
         $compileStart = Get-Date
 
         try {
-            # Create bin directory if it doesn't exist
-            if (-not (Test-Path "bin")) {
-                New-Item -ItemType Directory -Path "bin" | Out-Null
-            }
-
             # Compile using AL command line compiler with symbols from .alpackages
             Write-Host "Running AL compiler..."
             AL compile /project:"." /packagecachepath:".alpackages"
@@ -260,7 +284,35 @@ jobs:
             Write-Host $_.ScriptStackTrace
             exit 1
         }
-        
+
+    - name: Post-compilation analysis
+      shell: powershell
+      run: |
+        $analysisStart = Get-Date
+
+        # List compiled files
+        if (Test-Path "bin") {
+            Write-Host "Compiled files:"
+            $appFiles = Get-ChildItem "bin" -Recurse -Filter "*.app"
+            foreach ($file in $appFiles) {
+                $size = [math]::Round($file.Length / 1KB, 2)
+                Write-Host "  $($file.Name) - ${size} KB"
+            }
+            echo "APP_COUNT=$($appFiles.Count)" >> $env:GITHUB_ENV
+
+            if ($appFiles.Count -gt 0) {
+                $totalSize = ($appFiles | Measure-Object -Property Length -Sum).Sum
+                $totalSizeKB = [math]::Round($totalSize / 1KB, 2)
+                echo "TOTAL_APP_SIZE_KB=$totalSizeKB" >> $env:GITHUB_ENV
+                Write-Host "Total app size: ${totalSizeKB} KB"
+            }
+        }
+
+        $analysisEnd = Get-Date
+        $analysisDuration = ($analysisEnd - $analysisStart).TotalSeconds
+        echo "POST_COMPILE_ANALYSIS_DURATION=$analysisDuration" >> $env:GITHUB_ENV
+        Write-Host "Post-compilation analysis: $analysisDuration seconds"
+
     - name: Publish App to Container
       shell: powershell
       run: |
@@ -336,7 +388,7 @@ jobs:
             $testParams = @{
                 containerName = $containerName
                 extensionId = $extensionId
-                XUnitResultFileName = "TestResults\TestResults.xml"
+                GitHubActions = "warning"
                 detailed = $true
             }
 
@@ -396,57 +448,91 @@ jobs:
         $totalDuration = ($endTime - $startTime).TotalSeconds
 
         Write-Host "=== WINDOWS BUILD PERFORMANCE SUMMARY (WITH AL COMPILER + CONTAINER) ==="
-        Write-Host "AL/BCContainerHelper Installation: $env:AL_INSTALL_DURATION seconds"
-        Write-Host "BC Symbols Download: $env:SYMBOLS_DOWNLOAD_DURATION seconds"
-        Write-Host "BC Container Creation (for testing): $env:CONTAINER_CREATION_DURATION seconds"
-        Write-Host "AL Compilation: $env:COMPILE_DURATION seconds"
-        Write-Host "App Publishing to Container: $env:PUBLISH_DURATION seconds"
-        Write-Host "Test Execution: $env:TEST_DURATION seconds"
+        Write-Host "Build Start Time: $env:BUILD_START_TIME"
+        Write-Host "Build End Time: $($endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))"
+        Write-Host ""
+        Write-Host "=== DETAILED TIMINGS ==="
+        Write-Host "Setup (.NET + BcContainerHelper + AL tools): $env:SETUP_DURATION seconds"
+        Write-Host "Directory Creation: $env:DIR_CREATION_DURATION seconds"
+        Write-Host "System App Download: $env:SYSTEM_DOWNLOAD_DURATION seconds"
+        Write-Host "System App Extract: $env:SYSTEM_EXTRACT_DURATION seconds"
+        Write-Host "Base App Download: $env:BASE_DOWNLOAD_DURATION seconds"
+        Write-Host "Base App Extract: $env:BASE_EXTRACT_DURATION seconds"
+        Write-Host "Total Dependencies: $env:TOTAL_DEPENDENCY_DURATION seconds"
+        Write-Host "Pre-compile Setup: $env:PRECOMPILE_SETUP_DURATION seconds"
+        Write-Host "Compilation: $env:COMPILE_DURATION seconds"
+        Write-Host "Post-compile Analysis: $env:POST_COMPILE_ANALYSIS_DURATION seconds"
+        Write-Host "Container Creation: $env:CONTAINER_CREATION_DURATION seconds"
+        Write-Host "Publishing: $env:PUBLISH_DURATION seconds"
+        Write-Host "Testing: $env:TEST_DURATION seconds"
+        Write-Host ""
+        Write-Host "=== BUILD SUMMARY ==="
         Write-Host "Total Build Time: $totalDuration seconds"
-        Write-Host "Build completed at: $endTime"
+        if ($env:APP_COUNT) { Write-Host "Apps Generated: $env:APP_COUNT" }
+        if ($env:TOTAL_APP_SIZE_KB) { Write-Host "Total App Size: $env:TOTAL_APP_SIZE_KB KB" }
 
         # Save comprehensive metrics for comparison
         $metrics = @{
-            platform = "windows-al-compiler-with-container"
+            platform = "windows-full-test"
             runner_os = "windows-2022"
             total_duration = $totalDuration
-            al_install_duration = [double]$env:AL_INSTALL_DURATION
-            symbols_download_duration = [double]$env:SYMBOLS_DOWNLOAD_DURATION
-            container_creation_duration = [double]$env:CONTAINER_CREATION_DURATION
-            compile_duration = [double]$env:COMPILE_DURATION
-            publish_duration = [double]$env:PUBLISH_DURATION
-            test_duration = [double]$env:TEST_DURATION
+            setup_duration = if ($env:SETUP_DURATION) { [double]$env:SETUP_DURATION } else { 0 }
+            dir_creation_duration = if ($env:DIR_CREATION_DURATION) { [double]$env:DIR_CREATION_DURATION } else { 0 }
+            system_download_duration = if ($env:SYSTEM_DOWNLOAD_DURATION) { [double]$env:SYSTEM_DOWNLOAD_DURATION } else { 0 }
+            system_extract_duration = if ($env:SYSTEM_EXTRACT_DURATION) { [double]$env:SYSTEM_EXTRACT_DURATION } else { 0 }
+            base_download_duration = if ($env:BASE_DOWNLOAD_DURATION) { [double]$env:BASE_DOWNLOAD_DURATION } else { 0 }
+            base_extract_duration = if ($env:BASE_EXTRACT_DURATION) { [double]$env:BASE_EXTRACT_DURATION } else { 0 }
+            total_dependency_duration = if ($env:TOTAL_DEPENDENCY_DURATION) { [double]$env:TOTAL_DEPENDENCY_DURATION } else { 0 }
+            precompile_setup_duration = if ($env:PRECOMPILE_SETUP_DURATION) { [double]$env:PRECOMPILE_SETUP_DURATION } else { 0 }
+            compile_duration = if ($env:COMPILE_DURATION) { [double]$env:COMPILE_DURATION } else { 0 }
+            post_compile_analysis_duration = if ($env:POST_COMPILE_ANALYSIS_DURATION) { [double]$env:POST_COMPILE_ANALYSIS_DURATION } else { 0 }
+            container_creation_duration = if ($env:CONTAINER_CREATION_DURATION) { [double]$env:CONTAINER_CREATION_DURATION } else { 0 }
+            publish_duration = if ($env:PUBLISH_DURATION) { [double]$env:PUBLISH_DURATION } else { 0 }
+            test_duration = if ($env:TEST_DURATION) { [double]$env:TEST_DURATION } else { 0 }
+            app_count = if ($env:APP_COUNT) { [int]$env:APP_COUNT } else { 0 }
+            total_app_size_kb = if ($env:TOTAL_APP_SIZE_KB) { [double]$env:TOTAL_APP_SIZE_KB } else { 0 }
             timestamp = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
             uses_container = $true
             uses_al_compiler = $true
-            pipeline_type = "al-compiler-with-container"
+            pipeline_type = "full-test"
             measurement_precision = "milliseconds"
             github_run_id = $env:GITHUB_RUN_ID
             github_run_number = $env:GITHUB_RUN_NUMBER
             github_sha = $env:GITHUB_SHA
         }
 
-        $metrics | ConvertTo-Json | Out-File -FilePath "windows-al-compiler-container-metrics.json" -Encoding UTF8
-        Write-Host "Metrics saved to windows-al-compiler-container-metrics.json"
+        $metrics | ConvertTo-Json | Out-File -FilePath "windows-full-test-metrics.json" -Encoding UTF8
+        Write-Host "Metrics saved to windows-full-test-metrics.json"
 
         # Create raw measurements file for detailed external analysis
         $rawMeasurements = @{
             build_id = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_NUMBER)"
             platform = "windows"
             runner = "windows-2022"
-            pipeline_type = "al-compiler-with-container"
+            pipeline_type = "full-test"
             start_time = $env:BUILD_START_TIME
             end_time = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
             measurements = @(
-                @{ stage = "al_bc_install"; duration = [double]$env:AL_INSTALL_DURATION; unit = "seconds" }
-                @{ stage = "symbols_download"; duration = [double]$env:SYMBOLS_DOWNLOAD_DURATION; unit = "seconds" }
-                @{ stage = "container_creation"; duration = [double]$env:CONTAINER_CREATION_DURATION; unit = "seconds" }
-                @{ stage = "al_compile"; duration = [double]$env:COMPILE_DURATION; unit = "seconds" }
-                @{ stage = "app_publish"; duration = [double]$env:PUBLISH_DURATION; unit = "seconds" }
-                @{ stage = "test_execution"; duration = [double]$env:TEST_DURATION; unit = "seconds" }
+                @{ stage = "setup"; duration = if ($env:SETUP_DURATION) { [double]$env:SETUP_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "dir_creation"; duration = if ($env:DIR_CREATION_DURATION) { [double]$env:DIR_CREATION_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "system_download"; duration = if ($env:SYSTEM_DOWNLOAD_DURATION) { [double]$env:SYSTEM_DOWNLOAD_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "system_extract"; duration = if ($env:SYSTEM_EXTRACT_DURATION) { [double]$env:SYSTEM_EXTRACT_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "base_download"; duration = if ($env:BASE_DOWNLOAD_DURATION) { [double]$env:BASE_DOWNLOAD_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "base_extract"; duration = if ($env:BASE_EXTRACT_DURATION) { [double]$env:BASE_EXTRACT_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "precompile_setup"; duration = if ($env:PRECOMPILE_SETUP_DURATION) { [double]$env:PRECOMPILE_SETUP_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "compile"; duration = if ($env:COMPILE_DURATION) { [double]$env:COMPILE_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "post_compile_analysis"; duration = if ($env:POST_COMPILE_ANALYSIS_DURATION) { [double]$env:POST_COMPILE_ANALYSIS_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "container_creation"; duration = if ($env:CONTAINER_CREATION_DURATION) { [double]$env:CONTAINER_CREATION_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "publish"; duration = if ($env:PUBLISH_DURATION) { [double]$env:PUBLISH_DURATION } else { 0 }; unit = "seconds" }
+                @{ stage = "test"; duration = if ($env:TEST_DURATION) { [double]$env:TEST_DURATION } else { 0 }; unit = "seconds" }
             )
             totals = @{
                 total_duration = $totalDuration
+                dependency_total = if ($env:TOTAL_DEPENDENCY_DURATION) { [double]$env:TOTAL_DEPENDENCY_DURATION } else { 0 }
+            }
+            artifacts = @{
+                app_count = if ($env:APP_COUNT) { [int]$env:APP_COUNT } else { 0 }
+                total_app_size_kb = if ($env:TOTAL_APP_SIZE_KB) { [double]$env:TOTAL_APP_SIZE_KB } else { 0 }
             }
             environment = @{
                 github_actions = $true
@@ -454,20 +540,20 @@ jobs:
                 measurement_precision = "milliseconds"
                 bc_version = $env:BC_VERSION
                 container_name = $env:CONTAINER_NAME
-                compilation_method = "AL compiler with NuGet symbols"
+                uses_bccontainer_helper = $true
             }
         }
 
-        $rawMeasurements | ConvertTo-Json -Depth 10 | Out-File -FilePath "windows-al-compiler-container-raw-measurements.json" -Encoding UTF8
-        Write-Host "Raw measurements saved to windows-al-compiler-container-raw-measurements.json"
+        $rawMeasurements | ConvertTo-Json -Depth 10 | Out-File -FilePath "windows-full-test-raw-measurements.json" -Encoding UTF8
+        Write-Host "Raw measurements saved to windows-full-test-raw-measurements.json"
         
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: windows-al-compiler-container-artifacts
+        name: windows-full-test-artifacts
         path: |
           bin/
           TestResults/
-          windows-al-compiler-container-metrics.json
-          windows-al-compiler-container-raw-measurements.json
+          windows-full-test-metrics.json
+          windows-full-test-raw-measurements.json
         retention-days: 30

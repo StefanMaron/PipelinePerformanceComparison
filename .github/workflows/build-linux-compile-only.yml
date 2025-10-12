@@ -36,41 +36,27 @@ jobs:
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
-        
-    - name: Record .NET setup completion
-      run: |
-        DOTNET_SETUP_END=$(date +%s.%N)
-        DOTNET_SETUP_DURATION=$(echo "$DOTNET_SETUP_END - $BUILD_START_EPOCH" | bc -l | sed 's/^\./0./')
-        echo "DOTNET_SETUP_DURATION=$DOTNET_SETUP_DURATION" >> $GITHUB_ENV
-        echo ".NET setup took: $DOTNET_SETUP_DURATION seconds"
-        
+
     - name: Install BC Development Tools for Linux
       run: |
         echo "Installing BC Development Tools for Linux..."
-        INSTALL_START=$(date +%s.%N)
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools.Linux --version 16.0.24.41895-beta
-        
+
         # Ensure dotnet tools are in PATH
         export PATH="$PATH:$HOME/.dotnet/tools"
         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
-        
-        INSTALL_END=$(date +%s.%N)
-        INSTALL_DURATION=$(echo "$INSTALL_END - $INSTALL_START" | bc -l | sed 's/^\./0./')
-        echo "AL_INSTALL_DURATION=$INSTALL_DURATION" >> $GITHUB_ENV
-        echo "BC Development Tools for Linux installation took: $INSTALL_DURATION seconds"
-        
+
     - name: Verify BC Development Tools installation
       run: |
         echo "Verifying BC Development Tools installation..."
-        VERIFY_START=$(date +%s.%N)
-        
+
         # Test AL command directly (ignore exit code since AL --version returns 1)
         AL --version || true
-        
-        VERIFY_END=$(date +%s.%N)
-        VERIFY_DURATION=$(echo "$VERIFY_END - $VERIFY_START" | bc -l | sed 's/^\./0./')
-        echo "AL_VERIFY_DURATION=$VERIFY_DURATION" >> $GITHUB_ENV
-        echo "BC Development Tools verification took: $VERIFY_DURATION seconds"
+
+        SETUP_END=$(date +%s.%N)
+        SETUP_DURATION=$(echo "$SETUP_END - $BUILD_START_EPOCH" | bc -l | sed 's/^\./0./')
+        echo "SETUP_DURATION=$SETUP_DURATION" >> $GITHUB_ENV
+        echo "Setup (.NET + AL tools + verification) took: $SETUP_DURATION seconds"
         
     - name: Create dependencies directory
       run: |
@@ -184,19 +170,19 @@ jobs:
     - name: Post-compilation analysis
       run: |
         ANALYSIS_START=$(date +%s.%N)
-        
+
         # List and analyze compiled files
         if [ -d "bin" ]; then
             echo "Compiled files:"
             APP_COUNT=0
             TOTAL_SIZE_BYTES=0
-            
+
             find bin -type f -name "*.app" | while read file; do
                 SIZE_BYTES=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
                 SIZE_KB=$(echo "scale=2; $SIZE_BYTES / 1024" | bc -l | sed 's/^\./0./')
                 echo "  $(basename "$file") - ${SIZE_KB} KB"
             done
-            
+
             # Count apps and calculate total size
             APP_COUNT=$(find bin -type f -name "*.app" | wc -l)
             if [ "$APP_COUNT" -gt 0 ]; then
@@ -207,39 +193,12 @@ jobs:
                 echo "Total app size: ${TOTAL_SIZE_KB} KB"
             fi
         fi
-        
+
         ANALYSIS_END=$(date +%s.%N)
         ANALYSIS_DURATION=$(echo "$ANALYSIS_END - $ANALYSIS_START" | bc -l | sed 's/^\./0./')
         echo "POST_COMPILE_ANALYSIS_DURATION=$ANALYSIS_DURATION" >> $GITHUB_ENV
         echo "Post-compilation analysis: $ANALYSIS_DURATION seconds"
-        
-    - name: Mock Test Validation
-      run: |
-        echo "Running mock test validation..."
-        TEST_START=$(date +%s.%N)
-        
-        # Count and validate test files
-        TEST_FILES=$(find src/Test -name "*.al" -type f 2>/dev/null | wc -l)
-        echo "TEST_FILE_COUNT=$TEST_FILES" >> $GITHUB_ENV
-        
-        if [ "$TEST_FILES" -gt 0 ]; then
-            echo "Found $TEST_FILES test files:"
-            find src/Test -name "*.al" -type f | while read file; do
-                echo "  - $(basename "$file")"
-            done
-            
-            # Simulate test processing time
-            sleep 0.1
-            echo "Mock test validation completed successfully"
-        else
-            echo "No test files found"
-        fi
-        
-        TEST_END=$(date +%s.%N)
-        TEST_DURATION=$(echo "$TEST_END - $TEST_START" | bc -l | sed 's/^\./0./')
-        echo "TEST_DURATION=$TEST_DURATION" >> $GITHUB_ENV
-        echo "Mock testing took: $TEST_DURATION seconds"
-        
+
     - name: Calculate comprehensive build metrics
       run: |
         END_TIME=$(date -Iseconds)
@@ -251,9 +210,7 @@ jobs:
         echo "Build End Time: $END_TIME"
         echo ""
         echo "=== DETAILED TIMINGS ==="
-        echo ".NET Setup: $DOTNET_SETUP_DURATION seconds"
-        echo "AL Installation: $AL_INSTALL_DURATION seconds"
-        echo "AL Verification: $AL_VERIFY_DURATION seconds"
+        echo "Setup (.NET + AL tools): $SETUP_DURATION seconds"
         echo "Directory Creation: $DIR_CREATION_DURATION seconds"
         echo "System App Download: $SYSTEM_DOWNLOAD_DURATION seconds"
         echo "System App Extract: $SYSTEM_EXTRACT_DURATION seconds"
@@ -263,13 +220,11 @@ jobs:
         echo "Pre-compile Setup: $PRECOMPILE_SETUP_DURATION seconds"
         echo "Compilation: $COMPILE_DURATION seconds"
         echo "Post-compile Analysis: $POST_COMPILE_ANALYSIS_DURATION seconds"
-        echo "Mock Testing: $TEST_DURATION seconds"
         echo ""
         echo "=== BUILD SUMMARY ==="
         echo "Total Build Time: $TOTAL_DURATION seconds"
         if [ -n "$APP_COUNT" ]; then echo "Apps Generated: $APP_COUNT"; fi
         if [ -n "$TOTAL_APP_SIZE_KB" ]; then echo "Total App Size: $TOTAL_APP_SIZE_KB KB"; fi
-        if [ -n "$TEST_FILE_COUNT" ]; then echo "Test Files Found: $TEST_FILE_COUNT"; fi
         
         # Create comprehensive JSON metrics for external analysis
         cat > linux-compile-only-metrics.json << EOF
@@ -277,9 +232,7 @@ jobs:
           "platform": "linux-compile-only",
           "runner_os": "ubuntu-latest",
           "total_duration": $TOTAL_DURATION,
-          "dotnet_setup_duration": ${DOTNET_SETUP_DURATION:-0},
-          "al_install_duration": ${AL_INSTALL_DURATION:-0},
-          "al_verify_duration": ${AL_VERIFY_DURATION:-0},
+          "setup_duration": ${SETUP_DURATION:-0},
           "dir_creation_duration": ${DIR_CREATION_DURATION:-0},
           "system_download_duration": ${SYSTEM_DOWNLOAD_DURATION:-0},
           "system_extract_duration": ${SYSTEM_EXTRACT_DURATION:-0},
@@ -289,10 +242,8 @@ jobs:
           "precompile_setup_duration": ${PRECOMPILE_SETUP_DURATION:-0},
           "compile_duration": ${COMPILE_DURATION:-0},
           "post_compile_analysis_duration": ${POST_COMPILE_ANALYSIS_DURATION:-0},
-          "test_duration": ${TEST_DURATION:-0},
           "app_count": ${APP_COUNT:-0},
           "total_app_size_kb": ${TOTAL_APP_SIZE_KB:-0},
-          "test_file_count": ${TEST_FILE_COUNT:-0},
           "timestamp": "$END_TIME",
           "uses_container": false,
           "pipeline_type": "compile-only",
@@ -315,9 +266,7 @@ jobs:
           "start_time": "$BUILD_START_TIME",
           "end_time": "$END_TIME",
           "measurements": [
-            {"stage": "dotnet_setup", "duration": ${DOTNET_SETUP_DURATION:-0}, "unit": "seconds"},
-            {"stage": "al_install", "duration": ${AL_INSTALL_DURATION:-0}, "unit": "seconds"},
-            {"stage": "al_verify", "duration": ${AL_VERIFY_DURATION:-0}, "unit": "seconds"},
+            {"stage": "setup", "duration": ${SETUP_DURATION:-0}, "unit": "seconds"},
             {"stage": "dir_creation", "duration": ${DIR_CREATION_DURATION:-0}, "unit": "seconds"},
             {"stage": "system_download", "duration": ${SYSTEM_DOWNLOAD_DURATION:-0}, "unit": "seconds"},
             {"stage": "system_extract", "duration": ${SYSTEM_EXTRACT_DURATION:-0}, "unit": "seconds"},
@@ -325,8 +274,7 @@ jobs:
             {"stage": "base_extract", "duration": ${BASE_EXTRACT_DURATION:-0}, "unit": "seconds"},
             {"stage": "precompile_setup", "duration": ${PRECOMPILE_SETUP_DURATION:-0}, "unit": "seconds"},
             {"stage": "compile", "duration": ${COMPILE_DURATION:-0}, "unit": "seconds"},
-            {"stage": "post_compile_analysis", "duration": ${POST_COMPILE_ANALYSIS_DURATION:-0}, "unit": "seconds"},
-            {"stage": "mock_test", "duration": ${TEST_DURATION:-0}, "unit": "seconds"}
+            {"stage": "post_compile_analysis", "duration": ${POST_COMPILE_ANALYSIS_DURATION:-0}, "unit": "seconds"}
           ],
           "totals": {
             "total_duration": $TOTAL_DURATION,
@@ -334,8 +282,7 @@ jobs:
           },
           "artifacts": {
             "app_count": ${APP_COUNT:-0},
-            "total_app_size_kb": ${TOTAL_APP_SIZE_KB:-0},
-            "test_file_count": ${TEST_FILE_COUNT:-0}
+            "total_app_size_kb": ${TOTAL_APP_SIZE_KB:-0}
           },
           "environment": {
             "github_actions": true,

@@ -89,7 +89,7 @@ try {
             -Headers $Headers `
             -AllowUnencryptedAuthentication `
             -SkipHttpErrorCheck `
-            -TimeoutSec 10
+            -TimeoutSec 60
 
         if ($testResponse.value -and $testResponse.value.Count -gt 0) {
             # Use the first company
