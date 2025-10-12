@@ -141,7 +141,7 @@ jobs:
     - name: Pre-compilation setup
       run: |
         SETUP_START=$(date +%s.%N)
-        mkdir -p bin
+        # No bin directory needed - AL compiler outputs to project root by default
         SETUP_END=$(date +%s.%N)
         SETUP_DURATION=$(echo "$SETUP_END - $SETUP_START" | bc -l | sed 's/^\./0./')
         echo "PRECOMPILE_SETUP_DURATION=$SETUP_DURATION" >> $GITHUB_ENV
@@ -168,27 +168,25 @@ jobs:
       run: |
         ANALYSIS_START=$(date +%s.%N)
 
-        # List and analyze compiled files
-        if [ -d "bin" ]; then
-            echo "Compiled files:"
-            APP_COUNT=0
-            TOTAL_SIZE_BYTES=0
+        # List and analyze compiled files in project root
+        echo "Compiled files:"
+        APP_COUNT=0
+        TOTAL_SIZE_BYTES=0
 
-            find bin -type f -name "*.app" | while read file; do
-                SIZE_BYTES=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
-                SIZE_KB=$(echo "scale=2; $SIZE_BYTES / 1024" | bc -l | sed 's/^\./0./')
-                echo "  $(basename "$file") - ${SIZE_KB} KB"
-            done
+        find . -maxdepth 1 -type f -name "*.app" | while read file; do
+            SIZE_BYTES=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
+            SIZE_KB=$(echo "scale=2; $SIZE_BYTES / 1024" | bc -l | sed 's/^\./0./')
+            echo "  $(basename "$file") - ${SIZE_KB} KB"
+        done
 
-            # Count apps and calculate total size
-            APP_COUNT=$(find bin -type f -name "*.app" | wc -l)
-            if [ "$APP_COUNT" -gt 0 ]; then
-                TOTAL_SIZE_BYTES=$(find bin -type f -name "*.app" -exec stat -f%z {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || find bin -type f -name "*.app" -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo "0")
-                TOTAL_SIZE_KB=$(echo "scale=2; $TOTAL_SIZE_BYTES / 1024" | bc -l | sed 's/^\./0./')
-                echo "APP_COUNT=$APP_COUNT" >> $GITHUB_ENV
-                echo "TOTAL_APP_SIZE_KB=$TOTAL_SIZE_KB" >> $GITHUB_ENV
-                echo "Total app size: ${TOTAL_SIZE_KB} KB"
-            fi
+        # Count apps and calculate total size
+        APP_COUNT=$(find . -maxdepth 1 -type f -name "*.app" | wc -l)
+        if [ "$APP_COUNT" -gt 0 ]; then
+            TOTAL_SIZE_BYTES=$(find . -maxdepth 1 -type f -name "*.app" -exec stat -f%z {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || find . -maxdepth 1 -type f -name "*.app" -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo "0")
+            TOTAL_SIZE_KB=$(echo "scale=2; $TOTAL_SIZE_BYTES / 1024" | bc -l | sed 's/^\./0./')
+            echo "APP_COUNT=$APP_COUNT" >> $GITHUB_ENV
+            echo "TOTAL_APP_SIZE_KB=$TOTAL_SIZE_KB" >> $GITHUB_ENV
+            echo "Total app size: ${TOTAL_SIZE_KB} KB"
         fi
 
         ANALYSIS_END=$(date +%s.%N)
@@ -305,7 +303,7 @@ jobs:
       with:
         name: linux-compile-only-artifacts
         path: |
-          bin/
+          *.app
           linux-compile-only-metrics.json
           linux-raw-measurements.json
         retention-days: 30

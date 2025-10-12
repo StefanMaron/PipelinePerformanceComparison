@@ -57,7 +57,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install pandas tabulate matplotlib pillow
+        pip install pandas tabulate
 
     - name: Download all artifacts
       uses: actions/download-artifact@v4
@@ -70,6 +70,32 @@ jobs:
         find ./metrics -type f -name "*.json" | sort
         echo ""
 
+    - name: Fetch GitHub Actions job timings
+      run: |
+        echo "Fetching actual GitHub Actions job timings from current run..."
+
+        # Get job durations from the current workflow run
+        CURRENT_RUN_ID="${{ github.run_id }}"
+
+        # Function to get job duration
+        get_job_duration() {
+          local job_name=$1
+          gh api repos/${{ github.repository }}/actions/runs/$CURRENT_RUN_ID/jobs --jq ".jobs[] | select(.name == \"$job_name\") | {started_at, completed_at, duration_seconds: (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))}" 2>/dev/null || echo "{}"
+        }
+
+        # Fetch job durations
+        mkdir -p ./metrics/github_timings
+
+        get_job_duration "Linux Full Test" > ./metrics/github_timings/linux-full-test.json
+        get_job_duration "Linux Compile-Only" > ./metrics/github_timings/linux-compile-only.json
+        get_job_duration "Windows Full Test" > ./metrics/github_timings/windows-full-test.json
+        get_job_duration "Windows Compile-Only" > ./metrics/github_timings/windows-compile-only.json
+
+        echo "✓ GitHub Actions timings fetched"
+        ls -la ./metrics/github_timings/
+      env:
+        GH_TOKEN: ${{ github.token }}
+
     - name: Create metrics analysis script
       run: |
         cat > analyze_metrics.py << 'EOF'
@@ -77,7 +103,6 @@ jobs:
         import pandas as pd
         from pathlib import Path
         from tabulate import tabulate
-        import matplotlib.pyplot as plt
         from datetime import datetime
 
         # Load all metrics files
@@ -110,6 +135,27 @@ jobs:
         if not data:
             print("ERROR: No metrics files found!")
             exit(1)
+
+        # Load GitHub Actions timings
+        github_timings = {}
+        github_timing_files = {
+            'Linux Full Test': 'github_timings/linux-full-test.json',
+            'Linux Compile-Only': 'github_timings/linux-compile-only.json',
+            'Windows Full Test': 'github_timings/windows-full-test.json',
+            'Windows Compile-Only': 'github_timings/windows-compile-only.json'
+        }
+
+        for pipeline_name, filename in github_timing_files.items():
+            file_path = metrics_dir / filename
+            if file_path.exists():
+                try:
+                    with open(file_path, 'r') as f:
+                        timing = json.load(f)
+                        if timing.get('duration_seconds'):
+                            github_timings[pipeline_name] = timing['duration_seconds']
+                            print(f"✓ Loaded GitHub timing for {pipeline_name}")
+                except Exception as e:
+                    print(f"✗ Error loading GitHub timing for {pipeline_name}: {e}")
 
         print(f"\n✓ Successfully loaded {len(data)} pipeline(s)\n")
 
@@ -166,11 +212,34 @@ jobs:
             **{name: '─' * 10 for name in data.keys()}
         })
 
-        # Add total time
-        total_row = {'Phase': '**TOTAL BUILD TIME**'}
+        # Add total time (measured)
+        total_row = {'Phase': '**TOTAL BUILD TIME (Measured)**'}
         for pipeline_name, metrics in data.items():
             total_row[pipeline_name] = f"**{metrics.get('total_duration', 0):.2f}s**"
         comparison_data.append(total_row)
+
+        # Add GitHub Actions total time
+        if github_timings:
+            github_row = {'Phase': 'GitHub Actions Total Time'}
+            for pipeline_name in data.keys():
+                if pipeline_name in github_timings:
+                    github_row[pipeline_name] = f"{github_timings[pipeline_name]:.2f}s"
+                else:
+                    github_row[pipeline_name] = "N/A"
+            comparison_data.append(github_row)
+
+            # Add overhead calculation
+            overhead_row = {'Phase': 'Runner Overhead (Setup+Teardown)'}
+            for pipeline_name, metrics in data.items():
+                if pipeline_name in github_timings:
+                    measured = metrics.get('total_duration', 0)
+                    github_total = github_timings[pipeline_name]
+                    overhead = github_total - measured
+                    overhead_pct = (overhead / github_total * 100) if github_total > 0 else 0
+                    overhead_row[pipeline_name] = f"{overhead:.2f}s ({overhead_pct:.1f}%)"
+                else:
+                    overhead_row[pipeline_name] = "N/A"
+            comparison_data.append(overhead_row)
 
         # Add artifacts info
         comparison_data.append({
@@ -241,76 +310,10 @@ jobs:
         df.to_csv('performance-comparison.csv', index=False)
         print("✓ Saved to performance-comparison.csv")
 
-        # Generate visual chart
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-
-        # Chart 1: Total Build Time Comparison
-        pipeline_names = list(data.keys())
-        total_times = [metrics['total_duration'] for metrics in data.values()]
-        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D']
-
-        bars1 = ax1.bar(range(len(pipeline_names)), total_times, color=colors[:len(pipeline_names)],
-                       edgecolor='black', linewidth=1.5)
-        ax1.set_xlabel('Pipeline', fontsize=12, fontweight='bold')
-        ax1.set_ylabel('Time (seconds)', fontsize=12, fontweight='bold')
-        ax1.set_title('Total Build Time Comparison', fontsize=14, fontweight='bold', pad=20)
-        ax1.set_xticks(range(len(pipeline_names)))
-        ax1.set_xticklabels([name.replace(' ', '\n') for name in pipeline_names], fontsize=10)
-        ax1.grid(axis='y', alpha=0.3, linestyle='--')
-
-        # Add value labels on bars
-        for bar in bars1:
-            height = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.1f}s',
-                    ha='center', va='bottom', fontweight='bold', fontsize=11)
-
-        # Chart 2: Phase Breakdown (Stacked Bar)
-        phases = {
-            'Setup': 'setup_duration',
-            'Dependencies': 'total_dependency_duration',
-            'Compilation': 'compile_duration',
-            'Container/Test': ['container_creation_duration', 'docker_setup_duration',
-                              'bcdev_clone_duration', 'container_build_duration',
-                              'container_start_duration', 'publish_duration', 'test_duration']
-        }
-
-        phase_data = {phase: [] for phase in phases.keys()}
-        for pipeline_name in pipeline_names:
-            metrics = data[pipeline_name]
-            for phase, keys in phases.items():
-                if isinstance(keys, str):
-                    value = metrics.get(keys, 0)
-                else:
-                    value = sum(metrics.get(k, 0) for k in keys)
-                phase_data[phase].append(value)
-
-        bottom = [0] * len(pipeline_names)
-        phase_colors = ['#6A994E', '#BC4749', '#F2CC8F', '#81B29A']
-
-        for idx, (phase, values) in enumerate(phase_data.items()):
-            ax2.bar(range(len(pipeline_names)), values, bottom=bottom,
-                   label=phase, color=phase_colors[idx], edgecolor='white', linewidth=1)
-            bottom = [b + v for b, v in zip(bottom, values)]
-
-        ax2.set_xlabel('Pipeline', fontsize=12, fontweight='bold')
-        ax2.set_ylabel('Time (seconds)', fontsize=12, fontweight='bold')
-        ax2.set_title('Build Time Phase Breakdown', fontsize=14, fontweight='bold', pad=20)
-        ax2.set_xticks(range(len(pipeline_names)))
-        ax2.set_xticklabels([name.replace(' ', '\n') for name in pipeline_names], fontsize=10)
-        ax2.legend(loc='upper left', fontsize=10, framealpha=0.9)
-        ax2.grid(axis='y', alpha=0.3, linestyle='--')
-
-        plt.tight_layout()
-        plt.savefig('performance-comparison.png', dpi=300, bbox_inches='tight',
-                   facecolor='white', edgecolor='none')
-        print("✓ Saved to performance-comparison.png")
-
         print("\n" + "="*100)
         print("Analysis complete! Files generated:")
         print("  - performance-comparison.md   (Markdown table)")
         print("  - performance-comparison.csv  (Excel/PowerPoint ready)")
-        print("  - performance-comparison.png  (High-res charts)")
         print("="*100)
         EOF
 
@@ -333,5 +336,4 @@ jobs:
         path: |
           performance-comparison.md
           performance-comparison.csv
-          performance-comparison.png
         retention-days: 90

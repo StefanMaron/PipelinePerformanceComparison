@@ -236,9 +236,7 @@ jobs:
       shell: powershell
       run: |
         $setupStart = Get-Date
-        if (-not (Test-Path "bin")) {
-            New-Item -ItemType Directory -Path "bin"
-        }
+        # No bin directory needed - AL compiler outputs to project root by default
         $setupEnd = Get-Date
         $setupDuration = ($setupEnd - $setupStart).TotalSeconds
         echo "PRECOMPILE_SETUP_DURATION=$setupDuration" >> $env:GITHUB_ENV
@@ -277,22 +275,20 @@ jobs:
       run: |
         $analysisStart = Get-Date
 
-        # List compiled files
-        if (Test-Path "bin") {
-            Write-Host "Compiled files:"
-            $appFiles = Get-ChildItem "bin" -Recurse -Filter "*.app"
-            foreach ($file in $appFiles) {
-                $size = [math]::Round($file.Length / 1KB, 2)
-                Write-Host "  $($file.Name) - ${size} KB"
-            }
-            echo "APP_COUNT=$($appFiles.Count)" >> $env:GITHUB_ENV
+        # List compiled files in project root
+        Write-Host "Compiled files:"
+        $appFiles = Get-ChildItem "." -Filter "*.app"
+        foreach ($file in $appFiles) {
+            $size = [math]::Round($file.Length / 1KB, 2)
+            Write-Host "  $($file.Name) - ${size} KB"
+        }
+        echo "APP_COUNT=$($appFiles.Count)" >> $env:GITHUB_ENV
 
-            if ($appFiles.Count -gt 0) {
-                $totalSize = ($appFiles | Measure-Object -Property Length -Sum).Sum
-                $totalSizeKB = [math]::Round($totalSize / 1KB, 2)
-                echo "TOTAL_APP_SIZE_KB=$totalSizeKB" >> $env:GITHUB_ENV
-                Write-Host "Total app size: ${totalSizeKB} KB"
-            }
+        if ($appFiles.Count -gt 0) {
+            $totalSize = ($appFiles | Measure-Object -Property Length -Sum).Sum
+            $totalSizeKB = [math]::Round($totalSize / 1KB, 2)
+            echo "TOTAL_APP_SIZE_KB=$totalSizeKB" >> $env:GITHUB_ENV
+            Write-Host "Total app size: ${totalSizeKB} KB"
         }
 
         $analysisEnd = Get-Date
@@ -399,7 +395,7 @@ jobs:
       with:
         name: windows-compile-only-artifacts
         path: |
-          bin/
+          *.app
           windows-compile-only-metrics.json
           windows-raw-measurements.json
         retention-days: 30
