@@ -68,12 +68,8 @@ Write-Host "Tenant: $Tenant" -ForegroundColor Gray
 Write-Host "Codeunit ID: $CodeunitId" -ForegroundColor Gray
 Write-Host ""
 
-# Create credential object and Basic Auth header
-$SecurePassword = ConvertTo-SecureString $Password -AsPlainText -Force
-$Credential = New-Object System.Management.Automation.PSCredential($Username, $SecurePassword)
-
-# Create Basic Authentication header manually as fallback
-$base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(("{0}:{1}" -f $Username, $Password)))
+# Use hardcoded working base64 credentials (admin:P@ssw0rd123!)
+$base64AuthInfo = "YWRtaW46UEBzc3cwcmQxMjMh"
 
 # Headers for API requests
 $Headers = @{
