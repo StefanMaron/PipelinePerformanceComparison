@@ -211,7 +211,6 @@ jobs:
             accept_eula = $true
             auth = 'UserPassword'
             includeTestToolkit = $true
-            includeTestLibrariesOnly = $true
             assignPremiumPlan = $true
             memoryLimit = '8G'
             isolation = 'process'
