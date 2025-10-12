@@ -336,8 +336,7 @@ jobs:
             $testParams = @{
                 containerName = $containerName
                 extensionId = $extensionId
-                testResultsFile = "TestResults\TestResults.xml"
-                testResultsFormat = "XUnit"
+                XUnitResultFileName = "TestResults\TestResults.xml"
                 detailed = $true
             }
 
