@@ -381,10 +381,15 @@ jobs:
                 New-Item -ItemType Directory -Path "TestResults" | Out-Null
             }
 
+            # Create credentials for test execution
+            $password = ConvertTo-SecureString -String 'P@ssw0rd' -AsPlainText -Force
+            $credential = New-Object pscredential 'admin', $password
+
             # Run all tests for the extension
             $testParams = @{
                 containerName = $containerName
                 extensionId = $extensionId
+                credential = $credential
                 GitHubActions = "warning"
                 detailed = $true
             }
