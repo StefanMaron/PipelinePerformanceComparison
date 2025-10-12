@@ -73,8 +73,7 @@ jobs:
           local run_id=$1
           local job_name=$2
           if [ -n "$run_id" ]; then
-            result=$(gh api repos/${{ github.repository }}/actions/runs/$run_id/jobs --jq ".jobs[] | select(.name == \"$job_name\") | {started_at, completed_at, duration_seconds: (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))}" 2>/dev/null)
-            echo "${result:-{}}"
+            gh api repos/${{ github.repository }}/actions/runs/$run_id/jobs --jq "[.jobs[] | select(.name == \"$job_name\")] | if length > 0 then .[0] | {started_at, completed_at, duration_seconds: (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))} else {} end" 2>/dev/null || echo "{}"
           else
             echo "{}"
           fi

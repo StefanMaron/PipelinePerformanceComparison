@@ -80,8 +80,7 @@ jobs:
         # Function to get job duration
         get_job_duration() {
           local job_name=$1
-          result=$(gh api repos/${{ github.repository }}/actions/runs/$CURRENT_RUN_ID/jobs --jq ".jobs[] | select(.name == \"$job_name\") | {started_at, completed_at, duration_seconds: (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))}" 2>/dev/null)
-          echo "${result:-{}}"
+          gh api repos/${{ github.repository }}/actions/runs/$CURRENT_RUN_ID/jobs --jq "[.jobs[] | select(.name == \"$job_name\")] | if length > 0 then .[0] | {started_at, completed_at, duration_seconds: (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))} else {} end" 2>/dev/null || echo "{}"
         }
 
         # Fetch job durations
