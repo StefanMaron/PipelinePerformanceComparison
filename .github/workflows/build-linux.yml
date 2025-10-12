@@ -12,7 +12,7 @@ env:
 jobs:
   build-linux-full-test:
     runs-on: ubuntu-latest
-    name: Linux Full Build and Test
+    name: Linux Full Test Build
 
     steps:
     - name: Checkout repository

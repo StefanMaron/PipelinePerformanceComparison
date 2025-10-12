@@ -12,7 +12,7 @@ env:
 jobs:
   build-windows:
     runs-on: windows-latest
-    name: Build with AL Compiler and Test in BC Container
+    name: Windows Full Test Build
     timeout-minutes: 60
     
     steps:

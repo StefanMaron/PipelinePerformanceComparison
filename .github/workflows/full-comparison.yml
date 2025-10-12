@@ -80,16 +80,17 @@ jobs:
         # Function to get job duration
         get_job_duration() {
           local job_name=$1
-          gh api repos/${{ github.repository }}/actions/runs/$CURRENT_RUN_ID/jobs --jq ".jobs[] | select(.name == \"$job_name\") | {started_at, completed_at, duration_seconds: (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))}" 2>/dev/null || echo "{}"
+          result=$(gh api repos/${{ github.repository }}/actions/runs/$CURRENT_RUN_ID/jobs --jq ".jobs[] | select(.name == \"$job_name\") | {started_at, completed_at, duration_seconds: (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))}" 2>/dev/null)
+          echo "${result:-{}}"
         }
 
         # Fetch job durations
         mkdir -p ./metrics/github_timings
 
-        get_job_duration "Linux Full Test" > ./metrics/github_timings/linux-full-test.json
-        get_job_duration "Linux Compile-Only" > ./metrics/github_timings/linux-compile-only.json
-        get_job_duration "Windows Full Test" > ./metrics/github_timings/windows-full-test.json
-        get_job_duration "Windows Compile-Only" > ./metrics/github_timings/windows-compile-only.json
+        get_job_duration "Linux Full Test / Linux Full Test Build" > ./metrics/github_timings/linux-full-test.json
+        get_job_duration "Linux Compile-Only / Linux Compile-Only Build" > ./metrics/github_timings/linux-compile-only.json
+        get_job_duration "Windows Full Test / Windows Full Test Build" > ./metrics/github_timings/windows-full-test.json
+        get_job_duration "Windows Compile-Only / Windows Compile-Only Build" > ./metrics/github_timings/windows-compile-only.json
 
         echo "✓ GitHub Actions timings fetched"
         ls -la ./metrics/github_timings/
