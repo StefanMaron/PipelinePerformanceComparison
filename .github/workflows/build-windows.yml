@@ -1,4 +1,4 @@
-name: Build and Test (Windows)
+name: Build and Test (Windows with AL Compiler)
 
 on:
   push:
@@ -11,11 +11,11 @@ env:
   AL_VERSION: 'latest'
   BC_VERSION: '26.5'
   CONTAINER_NAME: 'bcserver'
-  
+
 jobs:
   build-windows:
     runs-on: windows-latest
-    name: Build and Test on Windows with BC Container
+    name: Build with AL Compiler and Test in BC Container
     timeout-minutes: 60
     
     steps:
@@ -34,10 +34,10 @@ jobs:
       with:
         dotnet-version: '8.0.x'
 
-    - name: Install BcContainerHelper and AL Language Extension
+    - name: Install BcContainerHelper and BC Development Tools
       shell: powershell
       run: |
-        Write-Host "Installing BcContainerHelper and AL Language Extension..."
+        Write-Host "Installing BcContainerHelper and BC Development Tools..."
         $installStart = Get-Date
 
         # Install BcContainerHelper
@@ -59,7 +59,7 @@ jobs:
         # Enable detailed container helper output
         $bcContainerHelperConfig.TreatWarningsAsErrors = @()
 
-        # Install BC Development Tools
+        # Install BC Development Tools (AL compiler)
         Write-Host "Installing BC Development Tools..."
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools --version 16.0.24.41895-beta
 
@@ -87,6 +87,84 @@ jobs:
         if (-not (Test-Path ".alpackages")) {
             New-Item -ItemType Directory -Path ".alpackages"
             Write-Host "Created .alpackages directory"
+        }
+
+    - name: Download BC Symbol Packages
+      shell: powershell
+      run: |
+        Write-Host "Downloading Business Central symbol packages from Microsoft feed..."
+        $downloadStart = Get-Date
+
+        # Microsoft BC Symbols NuGet feed
+        $bcFeed = "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json"
+
+        try {
+            # Download packages directly using the same approach as compile-only pipeline
+            $bcVersion = "26.3.36158.36341"
+            $bcBaseUrl = "https://dynamicssmb2.pkgs.visualstudio.com/571e802d-b44b-45fc-bd41-4cfddec73b44/_packaging/b656b10c-3de0-440c-900c-bc2e4e86d84c/nuget/v3/flat2"
+
+            New-Item -ItemType Directory -Path temp_packages -Force | Out-Null
+
+            Write-Host "Downloading Microsoft.SystemApplication.US.symbols..."
+            Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$bcVersion/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$bcVersion.nupkg" -OutFile "temp_packages\microsoft.systemapplication.us.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+
+            Write-Host "Downloading Microsoft.BaseApplication.US.symbols..."
+            Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972/$bcVersion/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972.$bcVersion.nupkg" -OutFile "temp_packages\microsoft.baseapplication.us.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+
+            Write-Host "Downloading Microsoft.Application.US.symbols..."
+            Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.application.us.symbols/$bcVersion/microsoft.application.us.symbols.$bcVersion.nupkg" -OutFile "temp_packages\microsoft.application.us.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+
+            # Second-level dependencies
+            Write-Host "Downloading Microsoft.BusinessFoundation.US.symbols (second-level dependency)..."
+            Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$bcVersion/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$bcVersion.nupkg" -OutFile "temp_packages\microsoft.businessfoundation.us.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+
+            # The actual System package (not SystemApplication)
+            $platformVersion = "26.0.38176"
+            Write-Host "Downloading Microsoft.Platform.symbols v$platformVersion (System dependency)..."
+            Invoke-WebRequest -Uri "$bcBaseUrl/microsoft.platform.symbols/$platformVersion/microsoft.platform.symbols.$platformVersion.nupkg" -OutFile "temp_packages\microsoft.platform.symbols.nupkg" -UseBasicParsing -ErrorAction SilentlyContinue
+
+            # Extract .nupkg files (which are zip files) - rename to .zip first for PowerShell
+            Get-ChildItem -Path temp_packages -Filter "*.nupkg" | ForEach-Object {
+                if ($_.Length -gt 0) {
+                    Write-Host "Extracting $($_.Name)..."
+                    $extractPath = "temp_packages\extracted\$($_.BaseName)"
+                    New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+                    try {
+                        # Rename .nupkg to .zip for PowerShell Expand-Archive
+                        $zipFile = $_.FullName -replace '\.nupkg$', '.zip'
+                        Rename-Item $_.FullName $zipFile
+                        Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+                        # Rename back for consistency
+                        Rename-Item $zipFile $_.FullName
+                    } catch {
+                        Write-Host "Failed to extract $($_.Name): $($_.Exception.Message)"
+                    }
+                } else {
+                    Write-Host "Skipping empty file: $($_.Name)"
+                }
+            }
+
+            # Extract .app files from downloaded packages
+            Get-ChildItem -Path temp_packages -Filter "*.app" -Recurse | ForEach-Object {
+                Copy-Item $_.FullName ".alpackages\" -Force
+                Write-Host "Copied: $($_.Name)"
+            }
+
+            # Clean up temporary files
+            Remove-Item -Recurse -Force temp_packages -ErrorAction SilentlyContinue
+
+            $downloadEnd = Get-Date
+            $downloadDuration = ($downloadEnd - $downloadStart).TotalSeconds
+            echo "SYMBOLS_DOWNLOAD_DURATION=$downloadDuration" >> $env:GITHUB_ENV
+            Write-Host "BC symbols download took: $downloadDuration seconds"
+
+            # List downloaded symbols
+            Write-Host "Downloaded symbol packages:"
+            Get-ChildItem .alpackages -Filter "*.app" | ForEach-Object { Write-Host "  $($_.Name)" }
+
+        } catch {
+            Write-Host "Error downloading BC symbols: $($_.Exception.Message)"
+            echo "SYMBOLS_DOWNLOAD_DURATION=0" >> $env:GITHUB_ENV
         }
 
     - name: Create BC Container
@@ -135,61 +213,99 @@ jobs:
         echo "CONTAINER_CREATION_DURATION=$containerDuration" >> $env:GITHUB_ENV
         Write-Host "Container creation took: $containerDuration seconds"
         
-    - name: Compile and Publish AL Extension
+    - name: Compile AL Extension with AL Compiler
       shell: powershell
       run: |
-        Write-Host "Compiling and publishing AL extension..."
+        Write-Host "Compiling AL extension with AL compiler..."
         $compileStart = Get-Date
-        
+
         try {
-            $containerName = $env:CONTAINER_NAME
-            
-            # Compile extension using BcContainerHelper
-            Write-Host "Compiling extension in container..."
-            Compile-AppInBcContainer -containerName $containerName -appProjectFolder "."
-            
+            # Create bin directory if it doesn't exist
+            if (-not (Test-Path "bin")) {
+                New-Item -ItemType Directory -Path "bin" | Out-Null
+            }
+
+            # Compile using AL command line compiler with symbols from .alpackages
+            Write-Host "Running AL compiler..."
+            AL compile /project:"." /packagecachepath:".alpackages"
+            $compileResult = $LASTEXITCODE
+
+            $compileEnd = Get-Date
+            $compileDuration = ($compileEnd - $compileStart).TotalSeconds
+            echo "COMPILE_DURATION=$compileDuration" >> $env:GITHUB_ENV
+            Write-Host "Compilation took: $compileDuration seconds"
+
+            if ($compileResult -ne 0) {
+                Write-Host "Compilation failed with exit code: $compileResult"
+                exit $compileResult
+            }
+
             # Get the compiled app file
             $appFiles = Get-ChildItem -Path "." -Filter "*.app" -Recurse
             if ($appFiles.Count -eq 0) {
                 throw "No app file found after compilation"
             }
-            
+
             $appFile = $appFiles[0]
             Write-Host "Found compiled app: $($appFile.Name)"
-            
-            # Publish the extension to the container
-            Write-Host "Publishing extension to container..."
-            Publish-BcContainerApp -containerName $containerName -appFile $appFile.FullName -skipVerification -sync -install
-            
-            $compileEnd = Get-Date
-            $compileDuration = ($compileEnd - $compileStart).TotalSeconds
-            echo "COMPILE_DURATION=$compileDuration" >> $env:GITHUB_ENV
-            Write-Host "Compilation and publishing took: $compileDuration seconds"
-            
-            # Move app file to bin directory for artifacts
-            if (-not (Test-Path "bin")) {
-                New-Item -ItemType Directory -Path "bin" | Out-Null
-            }
+
+            # Copy to bin directory for artifacts
             Copy-Item $appFile.FullName "bin\" -Force
             Write-Host "App file copied to bin directory"
-            
+
+            Write-Host "Compilation successful"
+
         } catch {
             Write-Host "Compilation error: $($_.Exception.Message)"
             Write-Host $_.ScriptStackTrace
             exit 1
         }
         
+    - name: Publish App to Container
+      shell: powershell
+      run: |
+        Write-Host "Publishing app to BC container..."
+        $publishStart = Get-Date
+
+        try {
+            $containerName = $env:CONTAINER_NAME
+
+            # Get the compiled app file
+            $appFile = Get-ChildItem -Path "bin" -Filter "*.app" | Select-Object -First 1
+            if (-not $appFile) {
+                throw "No app file found in bin directory"
+            }
+
+            Write-Host "Found app file: $($appFile.Name)"
+
+            # Publish the extension to the container
+            Write-Host "Publishing extension to container..."
+            Publish-BcContainerApp -containerName $containerName -appFile $appFile.FullName -skipVerification -sync -install
+
+            Write-Host "App published successfully"
+
+            $publishEnd = Get-Date
+            $publishDuration = ($publishEnd - $publishStart).TotalSeconds
+            echo "PUBLISH_DURATION=$publishDuration" >> $env:GITHUB_ENV
+            Write-Host "Publishing took: $publishDuration seconds"
+
+        } catch {
+            Write-Host "Publishing error: $($_.Exception.Message)"
+            Write-Host $_.ScriptStackTrace
+            exit 1
+        }
+
     - name: Run Tests
       shell: powershell
       run: |
         Write-Host "Running tests in Business Central container..."
         $testStart = Get-Date
-        
+
         try {
             $containerName = $env:CONTAINER_NAME
-            
+
             # Find test codeunits
-            $testFiles = Get-ChildItem -Path "src\Test" -Filter "*.al" -Recurse
+            $testFiles = Get-ChildItem -Path "src\Test" -Filter "*.al" -Recurse -ErrorAction SilentlyContinue
             if ($testFiles.Count -eq 0) {
                 Write-Host "No test files found, skipping test execution"
                 $testEnd = Get-Date
@@ -197,25 +313,25 @@ jobs:
                 echo "TEST_DURATION=$testDuration" >> $env:GITHUB_ENV
                 return
             }
-            
+
             Write-Host "Found $($testFiles.Count) test files"
             foreach ($file in $testFiles) {
                 Write-Host "  - $($file.Name)"
             }
-            
+
             # Get the extension ID from app.json
             $appJson = Get-Content "app.json" | ConvertFrom-Json
             $extensionId = $appJson.id
             Write-Host "Extension ID: $extensionId"
-            
+
             # Run tests using BcContainerHelper
             Write-Host "Executing tests in container..."
-            
+
             # Create test results directory
             if (-not (Test-Path "TestResults")) {
                 New-Item -ItemType Directory -Path "TestResults" | Out-Null
             }
-            
+
             # Run all tests for the extension
             $testParams = @{
                 containerName = $containerName
@@ -224,33 +340,33 @@ jobs:
                 testResultsFormat = "XUnit"
                 detailed = $true
             }
-            
+
             $testResult = Run-TestsInBcContainer @testParams
-            
+
             Write-Host "Test execution completed"
             Write-Host "Test Results Summary:"
             Write-Host "  Total Tests: $($testResult.TotalTests)"
-            Write-Host "  Passed: $($testResult.PassedTests)"  
+            Write-Host "  Passed: $($testResult.PassedTests)"
             Write-Host "  Failed: $($testResult.FailedTests)"
             Write-Host "  Skipped: $($testResult.SkippedTests)"
-            
+
             if (Test-Path "TestResults\TestResults.xml") {
                 Write-Host "Test results saved to TestResults\TestResults.xml"
             }
-            
+
             # Fail the build if tests failed
             if ($testResult.FailedTests -gt 0) {
                 Write-Host "ERROR: $($testResult.FailedTests) tests failed!"
                 exit 1
             }
-            
+
         } catch {
             Write-Host "Test execution error: $($_.Exception.Message)"
             Write-Host $_.ScriptStackTrace
-            
+
             # Try alternative test approach if the main one fails
             Write-Host "Attempting alternative test validation..."
-            $testFiles = Get-ChildItem -Path "src\Test" -Filter "*.al" -Recurse
+            $testFiles = Get-ChildItem -Path "src\Test" -Filter "*.al" -Recurse -ErrorAction SilentlyContinue
             Write-Host "Validated $($testFiles.Count) test files exist"
         } finally {
             $testEnd = Get-Date
@@ -279,48 +395,55 @@ jobs:
         $endTime = Get-Date
         $startTime = [DateTime]::Parse($env:BUILD_START_TIME)
         $totalDuration = ($endTime - $startTime).TotalSeconds
-        
-        Write-Host "=== WINDOWS BUILD PERFORMANCE SUMMARY (WITH BC CONTAINER) ==="
+
+        Write-Host "=== WINDOWS BUILD PERFORMANCE SUMMARY (WITH AL COMPILER + CONTAINER) ==="
         Write-Host "AL/BCContainerHelper Installation: $env:AL_INSTALL_DURATION seconds"
-        Write-Host "BC Container Creation (includes artifact download): $env:CONTAINER_CREATION_DURATION seconds"
-        Write-Host "Compilation & Publishing: $env:COMPILE_DURATION seconds"
+        Write-Host "BC Symbols Download: $env:SYMBOLS_DOWNLOAD_DURATION seconds"
+        Write-Host "BC Container Creation (for testing): $env:CONTAINER_CREATION_DURATION seconds"
+        Write-Host "AL Compilation: $env:COMPILE_DURATION seconds"
+        Write-Host "App Publishing to Container: $env:PUBLISH_DURATION seconds"
         Write-Host "Test Execution: $env:TEST_DURATION seconds"
         Write-Host "Total Build Time: $totalDuration seconds"
         Write-Host "Build completed at: $endTime"
 
         # Save comprehensive metrics for comparison
         $metrics = @{
-            platform = "windows-bc-container"
+            platform = "windows-al-compiler-with-container"
             runner_os = "windows-2022"
             total_duration = $totalDuration
             al_install_duration = [double]$env:AL_INSTALL_DURATION
+            symbols_download_duration = [double]$env:SYMBOLS_DOWNLOAD_DURATION
             container_creation_duration = [double]$env:CONTAINER_CREATION_DURATION
             compile_duration = [double]$env:COMPILE_DURATION
+            publish_duration = [double]$env:PUBLISH_DURATION
             test_duration = [double]$env:TEST_DURATION
             timestamp = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
             uses_container = $true
-            pipeline_type = "bc-container"
+            uses_al_compiler = $true
+            pipeline_type = "al-compiler-with-container"
             measurement_precision = "milliseconds"
             github_run_id = $env:GITHUB_RUN_ID
             github_run_number = $env:GITHUB_RUN_NUMBER
             github_sha = $env:GITHUB_SHA
         }
 
-        $metrics | ConvertTo-Json | Out-File -FilePath "windows-bc-container-metrics.json" -Encoding UTF8
-        Write-Host "BC Container metrics saved to windows-bc-container-metrics.json"
+        $metrics | ConvertTo-Json | Out-File -FilePath "windows-al-compiler-container-metrics.json" -Encoding UTF8
+        Write-Host "Metrics saved to windows-al-compiler-container-metrics.json"
 
         # Create raw measurements file for detailed external analysis
         $rawMeasurements = @{
             build_id = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_NUMBER)"
             platform = "windows"
             runner = "windows-2022"
-            pipeline_type = "bc-container"
+            pipeline_type = "al-compiler-with-container"
             start_time = $env:BUILD_START_TIME
             end_time = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
             measurements = @(
                 @{ stage = "al_bc_install"; duration = [double]$env:AL_INSTALL_DURATION; unit = "seconds" }
-                @{ stage = "container_creation_with_artifacts"; duration = [double]$env:CONTAINER_CREATION_DURATION; unit = "seconds" }
-                @{ stage = "compile_publish"; duration = [double]$env:COMPILE_DURATION; unit = "seconds" }
+                @{ stage = "symbols_download"; duration = [double]$env:SYMBOLS_DOWNLOAD_DURATION; unit = "seconds" }
+                @{ stage = "container_creation"; duration = [double]$env:CONTAINER_CREATION_DURATION; unit = "seconds" }
+                @{ stage = "al_compile"; duration = [double]$env:COMPILE_DURATION; unit = "seconds" }
+                @{ stage = "app_publish"; duration = [double]$env:PUBLISH_DURATION; unit = "seconds" }
                 @{ stage = "test_execution"; duration = [double]$env:TEST_DURATION; unit = "seconds" }
             )
             totals = @{
@@ -332,19 +455,20 @@ jobs:
                 measurement_precision = "milliseconds"
                 bc_version = $env:BC_VERSION
                 container_name = $env:CONTAINER_NAME
+                compilation_method = "AL compiler with NuGet symbols"
             }
         }
-        
-        $rawMeasurements | ConvertTo-Json -Depth 10 | Out-File -FilePath "windows-bc-container-raw-measurements.json" -Encoding UTF8
-        Write-Host "BC Container raw measurements saved to windows-bc-container-raw-measurements.json"
+
+        $rawMeasurements | ConvertTo-Json -Depth 10 | Out-File -FilePath "windows-al-compiler-container-raw-measurements.json" -Encoding UTF8
+        Write-Host "Raw measurements saved to windows-al-compiler-container-raw-measurements.json"
         
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: windows-bc-container-artifacts
+        name: windows-al-compiler-container-artifacts
         path: |
           bin/
           TestResults/
-          windows-bc-container-metrics.json
-          windows-bc-container-raw-measurements.json
+          windows-al-compiler-container-metrics.json
+          windows-al-compiler-container-raw-measurements.json
         retention-days: 30
