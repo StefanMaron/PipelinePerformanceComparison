@@ -247,14 +247,24 @@ jobs:
             'Phase': '',
             **{name: '' for name in data.keys()}
         })
-        comparison_data.append({
-            'Phase': 'Apps Generated',
-            **{name: str(metrics.get('app_count', 0)) for name, metrics in data.items()}
-        })
-        comparison_data.append({
-            'Phase': 'Total App Size',
-            **{name: f"{metrics.get('total_app_size_kb', 0):.2f} KB" for name, metrics in data.items()}
-        })
+
+        # Apps Generated - show N/A for compile-only pipelines
+        apps_row = {'Phase': 'Apps Generated'}
+        for name, metrics in data.items():
+            if 'Compile-Only' in name:
+                apps_row[name] = 'N/A'
+            else:
+                apps_row[name] = str(metrics.get('app_count', 0))
+        comparison_data.append(apps_row)
+
+        # Total App Size - show N/A for compile-only pipelines
+        size_row = {'Phase': 'Total App Size'}
+        for name, metrics in data.items():
+            if 'Compile-Only' in name:
+                size_row[name] = 'N/A'
+            else:
+                size_row[name] = f"{metrics.get('total_app_size_kb', 0):.2f} KB"
+        comparison_data.append(size_row)
 
         # Create DataFrame with explicit column order
         column_order = ['Phase', 'Linux Compile-Only', 'Linux Full Test', 'Windows Compile-Only', 'Windows Full Test']
