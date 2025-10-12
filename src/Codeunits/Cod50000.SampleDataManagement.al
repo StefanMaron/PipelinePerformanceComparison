@@ -46,7 +46,6 @@ codeunit 50000 "Sample Data Management PPC"
             end;
         end;
 
-        Message('Generated %1 sample records with %2 lines each.', NoOfRecords, NoOfLines);
     end;
 
     /// <summary>
@@ -59,8 +58,6 @@ codeunit 50000 "Sample Data Management PPC"
     begin
         SampleLine.DeleteAll();
         SampleData.DeleteAll();
-
-        Message('All sample data has been cleared.');
     end;
 
     /// <summary>
