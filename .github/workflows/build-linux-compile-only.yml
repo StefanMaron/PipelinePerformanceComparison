@@ -1,11 +1,8 @@
 name: Build Linux (Compile Only)
 
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
+  workflow_call:
 
 env:
   AL_VERSION: 'latest'

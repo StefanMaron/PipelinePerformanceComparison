@@ -1,17 +1,50 @@
-name: Analyze Performance Metrics
+name: Full Pipeline Comparison
 
 on:
   workflow_dispatch:
     inputs:
-      run_id:
-        description: 'GitHub Run ID to analyze (leave empty for latest)'
+      description:
+        description: 'Comparison run description (optional)'
         required: false
         type: string
 
+env:
+  AL_VERSION: 'latest'
+  BC_VERSION: '26.5'
+  CONTAINER_NAME: 'bcserver'
+  BCDEV_REPO: 'https://github.com/StefanMaron/BCDevOnLinux.git'
+  BCDEV_BRANCH: 'v2'
+
 jobs:
-  analyze-metrics:
+  # ============================================================================
+  # BUILD JOBS - Run in parallel
+  # ============================================================================
+
+  linux-full-test:
+    uses: ./.github/workflows/build-linux.yml
+    name: Linux Full Test
+
+  linux-compile-only:
+    uses: ./.github/workflows/build-linux-compile-only.yml
+    name: Linux Compile-Only
+
+  windows-full-test:
+    uses: ./.github/workflows/build-windows.yml
+    name: Windows Full Test
+
+  windows-compile-only:
+    uses: ./.github/workflows/build-windows-compile-only.yml
+    name: Windows Compile-Only
+
+  # ============================================================================
+  # ANALYSIS JOB - Runs after all builds complete
+  # ============================================================================
+
+  analyze-results:
     runs-on: ubuntu-latest
-    name: Generate Performance Comparison Table
+    name: Analyze & Compare Results
+    needs: [linux-full-test, linux-compile-only, windows-full-test, windows-compile-only]
+    if: always() # Run even if some builds fail
 
     steps:
     - name: Checkout repository
@@ -26,37 +59,16 @@ jobs:
       run: |
         pip install pandas tabulate matplotlib pillow
 
-    - name: Download Linux Full Test artifacts
-      uses: dawidd6/action-download-artifact@v3
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
       with:
-        workflow: build-linux.yml
-        name: linux-full-test-artifacts
         path: ./metrics
-        if_no_artifact_found: warn
 
-    - name: Download Linux Compile-Only artifacts
-      uses: dawidd6/action-download-artifact@v3
-      with:
-        workflow: build-linux-compile-only.yml
-        name: linux-compile-only-artifacts
-        path: ./metrics
-        if_no_artifact_found: warn
-
-    - name: Download Windows Full Test artifacts
-      uses: dawidd6/action-download-artifact@v3
-      with:
-        workflow: build-windows.yml
-        name: windows-full-test-artifacts
-        path: ./metrics
-        if_no_artifact_found: warn
-
-    - name: Download Windows Compile-Only artifacts
-      uses: dawidd6/action-download-artifact@v3
-      with:
-        workflow: build-windows-compile-only.yml
-        name: windows-compile-only-artifacts
-        path: ./metrics
-        if_no_artifact_found: warn
+    - name: List downloaded artifacts
+      run: |
+        echo "=== Downloaded Artifacts ==="
+        find ./metrics -type f -name "*.json" | sort
+        echo ""
 
     - name: Create metrics analysis script
       run: |
@@ -66,11 +78,12 @@ jobs:
         from pathlib import Path
         from tabulate import tabulate
         import matplotlib.pyplot as plt
-        import matplotlib.patches as mpatches
         from datetime import datetime
 
         # Load all metrics files
         metrics_dir = Path('./metrics')
+
+        # Find all JSON metrics files recursively
         metrics_files = {
             'Linux Full Test': 'linux-full-test-metrics.json',
             'Linux Compile-Only': 'linux-compile-only-metrics.json',
@@ -80,13 +93,15 @@ jobs:
 
         data = {}
         for pipeline_name, filename in metrics_files.items():
-            file_path = metrics_dir / filename
-            if file_path.exists():
+            # Search recursively for the file
+            found_files = list(metrics_dir.rglob(filename))
+            if found_files:
+                file_path = found_files[0]
                 try:
                     # Handle UTF-8 BOM that Windows PowerShell might add
                     with open(file_path, 'r', encoding='utf-8-sig') as f:
                         data[pipeline_name] = json.load(f)
-                    print(f"✓ Loaded {pipeline_name}")
+                    print(f"✓ Loaded {pipeline_name} from {file_path}")
                 except Exception as e:
                     print(f"✗ Error loading {pipeline_name}: {e}")
             else:
@@ -211,6 +226,15 @@ jobs:
                 else:
                     f.write(f"- **Platform**: Windows full test is {abs(diff):.1f}% faster than Linux\n")
 
+            if 'Linux Compile-Only' in data and 'Windows Compile-Only' in data:
+                linux_time = data['Linux Compile-Only']['total_duration']
+                windows_time = data['Windows Compile-Only']['total_duration']
+                diff = ((windows_time - linux_time) / linux_time * 100)
+                if diff > 0:
+                    f.write(f"- **Platform**: Windows compile-only is {diff:.1f}% slower than Linux\n")
+                else:
+                    f.write(f"- **Platform**: Windows compile-only is {abs(diff):.1f}% faster than Linux\n")
+
         print("\n✓ Saved to performance-comparison.md")
 
         # Generate CSV for Excel/PowerPoint
@@ -225,7 +249,8 @@ jobs:
         total_times = [metrics['total_duration'] for metrics in data.values()]
         colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D']
 
-        bars1 = ax1.bar(range(len(pipeline_names)), total_times, color=colors, edgecolor='black', linewidth=1.5)
+        bars1 = ax1.bar(range(len(pipeline_names)), total_times, color=colors[:len(pipeline_names)],
+                       edgecolor='black', linewidth=1.5)
         ax1.set_xlabel('Pipeline', fontsize=12, fontweight='bold')
         ax1.set_ylabel('Time (seconds)', fontsize=12, fontweight='bold')
         ax1.set_title('Total Build Time Comparison', fontsize=14, fontweight='bold', pad=20)
@@ -292,12 +317,13 @@ jobs:
     - name: Run analysis
       run: python analyze_metrics.py
 
-    - name: Display results
+    - name: Display results in summary
       if: always()
       run: |
         if [ -f performance-comparison.md ]; then
-          echo "=== PERFORMANCE COMPARISON TABLE ==="
-          cat performance-comparison.md
+          echo "## 📊 Performance Comparison Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat performance-comparison.md >> $GITHUB_STEP_SUMMARY
         fi
 
     - name: Upload analysis results
