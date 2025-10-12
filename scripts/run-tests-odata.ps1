@@ -45,7 +45,7 @@ param(
     [string]$Username = "admin",
 
     [Parameter(Mandatory=$false)]
-    [string]$Password = "P@ssw0rd123!",
+    [string]$Password = "Admin123!",
 
     [Parameter(Mandatory=$false)]
     [int]$CodeunitId = 50002,
@@ -68,8 +68,9 @@ Write-Host "Tenant: $Tenant" -ForegroundColor Gray
 Write-Host "Codeunit ID: $CodeunitId" -ForegroundColor Gray
 Write-Host ""
 
-# Use hardcoded working base64 credentials (admin:P@ssw0rd123!)
-$base64AuthInfo = "YWRtaW46UEBzc3cwcmQxMjMh"
+# Use hardcoded working base64 credentials (admin:Admin123!)
+# Base64 encoding of "admin:Admin123!"
+$base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("admin:Admin123!"))
 
 # Headers for API requests
 $Headers = @{
@@ -79,31 +80,34 @@ $Headers = @{
 }
 
 try {
-    # Pre-flight check: Test basic API connectivity
-    Write-Host "[0/4] Testing API connectivity..." -ForegroundColor Yellow
+    # Pre-flight check: Test basic API connectivity and get company ID
+    Write-Host "[0/5] Testing API connectivity and retrieving company..." -ForegroundColor Yellow
     try {
         $testUrl = "$BaseUrl/api/v2.0/companies"
-        $testResponse = Invoke-WebRequest -Uri $testUrl `
+        $testResponse = Invoke-RestMethod -Uri $testUrl `
             -Method Get `
             -Headers $Headers `
             -AllowUnencryptedAuthentication `
             -SkipHttpErrorCheck `
             -TimeoutSec 10
 
-        if ($testResponse.StatusCode -eq 200) {
-            Write-Host "✓ API is accessible (HTTP $($testResponse.StatusCode))" -ForegroundColor Green
-        } elseif ($testResponse.StatusCode -eq 401) {
-            Write-Host "✗ Authentication failed (HTTP 401)" -ForegroundColor Red
-            Write-Host "  Current credentials: $Username / [password hidden]" -ForegroundColor Gray
-            Write-Host "  Please verify container credentials or check BCDevOnLinux setup" -ForegroundColor Yellow
-            exit 1
+        if ($testResponse.value -and $testResponse.value.Count -gt 0) {
+            # Use the first company
+            $CompanyId = $testResponse.value[0].id
+            $CompanyName = $testResponse.value[0].name
+            Write-Host "✓ API is accessible" -ForegroundColor Green
+            Write-Host "  Using company: $CompanyName ($CompanyId)" -ForegroundColor Gray
         } else {
-            Write-Host "⚠ Unexpected status code: $($testResponse.StatusCode)" -ForegroundColor Yellow
+            Write-Host "✗ No companies found in BC" -ForegroundColor Red
+            exit 1
         }
     } catch {
-        Write-Host "⚠ Warning: Could not verify API connectivity: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "  Continuing anyway..." -ForegroundColor Gray
+        Write-Host "✗ Failed to connect to API: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
     }
+
+    # Update API URL to include company
+    $ApiUrl = "$BaseUrl/api/custom/automation/v1.0/companies($CompanyId)/codeunitRunRequests"
     Write-Host ""
 
     Write-Host "[1/4] Creating execution request..." -ForegroundColor Yellow
@@ -131,7 +135,7 @@ try {
     Write-Host "[2/4] Executing codeunit..." -ForegroundColor Yellow
 
     # Step 2: Execute the codeunit via the runCodeunit action
-    $ActionUrl = "$BaseUrl/api/custom/automation/v1.0/codeunitRunRequests($RequestId)/Microsoft.NAV.runCodeunit"
+    $ActionUrl = "$BaseUrl/api/custom/automation/v1.0/companies($CompanyId)/codeunitRunRequests($RequestId)/Microsoft.NAV.runCodeunit"
 
     $ExecuteResponse = Invoke-RestMethod -Uri $ActionUrl `
         -Method Post `

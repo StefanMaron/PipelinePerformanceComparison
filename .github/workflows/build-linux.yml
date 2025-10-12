@@ -347,7 +347,7 @@ jobs:
         echo "Publishing app file: $APP_FILE"
 
         # Publish extension to BC container using API
-        curl -u "admin:P@ssw0rd123!" \
+        curl -u "admin:Admin123!" \
              -F "file=@$APP_FILE" \
              "http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
 
@@ -368,7 +368,7 @@ jobs:
           -BaseUrl "http://localhost:7048/BC" \
           -Tenant "default" \
           -Username "admin" \
-          -Password "P@ssw0rd123!" \
+          -Password "Admin123!" \
           -CodeunitId 50002 \
           -MaxWaitSeconds 300
 
