@@ -432,10 +432,15 @@ jobs:
       run: |
         Write-Host "Cleaning up BC container..."
         try {
+            # Import BcContainerHelper module
+            Import-Module BcContainerHelper -Force -DisableNameChecking -ErrorAction SilentlyContinue
+
             $containerName = $env:CONTAINER_NAME
             if (Get-BcContainer -containerName $containerName -ErrorAction SilentlyContinue) {
                 Remove-BcContainer -containerName $containerName -ErrorAction SilentlyContinue
                 Write-Host "Container $containerName removed"
+            } else {
+                Write-Host "Container $containerName not found or already removed"
             }
         } catch {
             Write-Host "Error during cleanup: $($_.Exception.Message)"
