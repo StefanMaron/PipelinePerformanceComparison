@@ -275,7 +275,25 @@ jobs:
             f.write(markdown_table)
             f.write("\n\n## Key Findings\n\n")
 
-            # Calculate speedups
+            # Calculate speedups - Platform comparison first
+            if 'Linux Compile-Only' in data and 'Windows Compile-Only' in data:
+                linux_time = data['Linux Compile-Only']['total_duration']
+                windows_time = data['Windows Compile-Only']['total_duration']
+                diff = ((windows_time - linux_time) / linux_time * 100)
+                if diff > 0:
+                    f.write(f"- **Linux vs Windows** (Compile-only): Linux is **{diff:.1f}% faster** than Windows ({linux_time:.2f}s vs {windows_time:.2f}s)\n")
+                else:
+                    f.write(f"- **Linux vs Windows** (Compile-only): Windows is **{abs(diff):.1f}% faster** than Linux ({windows_time:.2f}s vs {linux_time:.2f}s)\n")
+
+            if 'Linux Full Test' in data and 'Windows Full Test' in data:
+                linux_time = data['Linux Full Test']['total_duration']
+                windows_time = data['Windows Full Test']['total_duration']
+                diff = ((windows_time - linux_time) / linux_time * 100)
+                if diff > 0:
+                    f.write(f"- **Linux vs Windows** (Full test): Linux is **{diff:.1f}% faster** than Windows ({linux_time:.2f}s vs {windows_time:.2f}s)\n")
+                else:
+                    f.write(f"- **Linux vs Windows** (Full test): Windows is **{abs(diff):.1f}% faster** than Linux ({windows_time:.2f}s vs {linux_time:.2f}s)\n")
+
             if 'Linux Compile-Only' in data and 'Linux Full Test' in data:
                 compile_time = data['Linux Compile-Only']['total_duration']
                 full_time = data['Linux Full Test']['total_duration']
@@ -287,15 +305,6 @@ jobs:
                 full_time = data['Windows Full Test']['total_duration']
                 speedup = (full_time - compile_time) / compile_time * 100
                 f.write(f"- **Windows**: Compile-only is {abs(speedup):.1f}% faster than full test\n")
-
-            if 'Linux Full Test' in data and 'Windows Full Test' in data:
-                linux_time = data['Linux Full Test']['total_duration']
-                windows_time = data['Windows Full Test']['total_duration']
-                diff = ((windows_time - linux_time) / linux_time * 100)
-                if diff > 0:
-                    f.write(f"- **Platform**: Windows full test is {diff:.1f}% slower than Linux\n")
-                else:
-                    f.write(f"- **Platform**: Windows full test is {abs(diff):.1f}% faster than Linux\n")
 
         print("\n✓ Saved to performance-comparison.md")
 
