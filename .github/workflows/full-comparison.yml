@@ -179,7 +179,6 @@ jobs:
                                  'container_build_duration', 'container_start_duration']),
             ('App Publishing', 'publish_duration'),
             ('Test Execution', 'test_duration'),
-            ('Cleanup', 'cleanup_duration'),
         ]
 
         # Build comparison rows

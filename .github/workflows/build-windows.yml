@@ -428,21 +428,7 @@ jobs:
             echo "TEST_DURATION=$testDuration" >> $env:GITHUB_ENV
             Write-Host "Testing took: $testDuration seconds"
         }
-        
-    - name: Cleanup Container
-      shell: powershell
-      run: |
-        Write-Host "Cleaning up BC container..."
-        try {
-            $containerName = $env:CONTAINER_NAME
-            if (Get-BcContainer -containerName $containerName -ErrorAction SilentlyContinue) {
-                Remove-BcContainer -containerName $containerName -ErrorAction SilentlyContinue
-                Write-Host "Container $containerName removed"
-            }
-        } catch {
-            Write-Host "Error during cleanup: $($_.Exception.Message)"
-        }
-        
+
     - name: Calculate total build time
       shell: powershell
       run: |

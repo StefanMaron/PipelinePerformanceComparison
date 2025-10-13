@@ -365,24 +365,6 @@ jobs:
         # Exit with the test script's exit code
         exit $TEST_EXIT_CODE
 
-    - name: Cleanup Container
-      if: always()
-      run: |
-        echo "Cleaning up BC container..."
-        CLEANUP_START=$(date +%s.%N)
-
-        cd bcdev-temp
-
-        # Stop and remove containers
-        docker compose down -v
-
-        CLEANUP_END=$(date +%s.%N)
-        CLEANUP_DURATION=$(echo "$CLEANUP_END - $CLEANUP_START" | bc -l | sed 's/^\./0./')
-        echo "CLEANUP_DURATION=$CLEANUP_DURATION" >> $GITHUB_ENV
-        echo "Container cleanup took: $CLEANUP_DURATION seconds"
-
-        cd ..
-
     - name: Calculate comprehensive build metrics
       run: |
         END_TIME=$(date -Iseconds)
@@ -410,7 +392,6 @@ jobs:
         echo "Container Start: $CONTAINER_START_DURATION seconds"
         echo "Publishing: $PUBLISH_DURATION seconds"
         echo "Testing: $TEST_DURATION seconds"
-        echo "Cleanup: ${CLEANUP_DURATION:-0} seconds"
         echo ""
         echo "=== BUILD SUMMARY ==="
         echo "Total Build Time: $TOTAL_DURATION seconds"
@@ -440,7 +421,6 @@ jobs:
           "container_start_duration": ${CONTAINER_START_DURATION:-0},
           "publish_duration": ${PUBLISH_DURATION:-0},
           "test_duration": ${TEST_DURATION:-0},
-          "cleanup_duration": ${CLEANUP_DURATION:-0},
           "app_count": ${APP_COUNT:-0},
           "total_app_size_kb": ${TOTAL_APP_SIZE_KB:-0},
           "test_file_count": ${TEST_FILE_COUNT:-0},
@@ -480,8 +460,7 @@ jobs:
             {"stage": "container_build", "duration": ${CONTAINER_BUILD_DURATION:-0}, "unit": "seconds"},
             {"stage": "container_start", "duration": ${CONTAINER_START_DURATION:-0}, "unit": "seconds"},
             {"stage": "publish", "duration": ${PUBLISH_DURATION:-0}, "unit": "seconds"},
-            {"stage": "test", "duration": ${TEST_DURATION:-0}, "unit": "seconds"},
-            {"stage": "cleanup", "duration": ${CLEANUP_DURATION:-0}, "unit": "seconds"}
+            {"stage": "test", "duration": ${TEST_DURATION:-0}, "unit": "seconds"}
           ],
           "totals": {
             "total_duration": $TOTAL_DURATION,
