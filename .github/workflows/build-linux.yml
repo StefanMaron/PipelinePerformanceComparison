@@ -229,11 +229,32 @@ jobs:
         CONTAINER_BUILD_START=$(date +%s.%N)
         echo "CONTAINER_BUILD_START=$CONTAINER_BUILD_START" >> $GITHUB_ENV
 
-        echo "Pulling BC Wine base image separately for optimized download..."
+        echo "Pulling BC Wine base image with optimizations..."
         BASE_IMAGE_PULL_START=$(date +%s.%N)
 
+        # Optimize Docker daemon for faster pulls
+        # - Increase max concurrent downloads (default is 3)
+        # - Increase max download attempts
+        sudo tee /etc/docker/daemon.json > /dev/null <<EOF
+        {
+          "max-concurrent-downloads": 10,
+          "max-download-attempts": 5
+        }
+        EOF
+        sudo systemctl restart docker
+
+        # Wait for Docker to be ready (with health check)
+        for i in {1..10}; do
+          if docker info &>/dev/null; then
+            echo "Docker is ready"
+            break
+          fi
+          sleep 0.5
+        done
+
         # Pull the base image separately (faster than pulling during build)
-        docker pull stefanmaronbc/bc-wine-base:latest
+        # Using --platform to be explicit and avoid manifest checks
+        docker pull --platform linux/amd64 stefanmaronbc/bc-wine-base:latest
 
         BASE_IMAGE_PULL_END=$(date +%s.%N)
         BASE_IMAGE_PULL_DURATION=$(echo "$BASE_IMAGE_PULL_END - $BASE_IMAGE_PULL_START" | bc -l | sed 's/^\./0./')
