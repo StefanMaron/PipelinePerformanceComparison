@@ -223,10 +223,26 @@ jobs:
         echo "BCDEV_CLONE_DURATION=$CLONE_DURATION" >> $GITHUB_ENV
         echo "BCDevOnLinux clone took: $CLONE_DURATION seconds"
 
+    - name: Pull BC Wine Base Image
+      run: |
+        echo "Starting container build process (including base image pull)..."
+        CONTAINER_BUILD_START=$(date +%s.%N)
+        echo "CONTAINER_BUILD_START=$CONTAINER_BUILD_START" >> $GITHUB_ENV
+
+        echo "Pulling BC Wine base image separately for optimized download..."
+        BASE_IMAGE_PULL_START=$(date +%s.%N)
+
+        # Pull the base image separately (faster than pulling during build)
+        docker pull stefanmaronbc/bc-wine-base:latest
+
+        BASE_IMAGE_PULL_END=$(date +%s.%N)
+        BASE_IMAGE_PULL_DURATION=$(echo "$BASE_IMAGE_PULL_END - $BASE_IMAGE_PULL_START" | bc -l | sed 's/^\./0./')
+        echo "BASE_IMAGE_PULL_DURATION=$BASE_IMAGE_PULL_DURATION" >> $GITHUB_ENV
+        echo "Base image pull took: $BASE_IMAGE_PULL_DURATION seconds"
+
     - name: Build BC Container with Docker Compose
       run: |
         echo "Building Business Central container..."
-        CONTAINER_BUILD_START=$(date +%s.%N)
 
         cd bcdev-temp
 
