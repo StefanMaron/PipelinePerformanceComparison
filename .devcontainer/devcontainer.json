@@ -1,19 +1,17 @@
 {
   "name": "BC Dev Environment",
-  "dockerComposeFile": [
-    "./bcdevonlinux/docker-compose.yml"
-  ],
+  "dockerComposeFile": "bcdevonlinux/compose.yml",
   "service": "bc",
   "workspaceFolder": "/workspace",
-  "forwardPorts": [8080, 7048, 7049, 7449, 1433],
-  "runServices": ["bc", "sql"],
+  "forwardPorts": [7045, 7046, 7047, 7048, 7049, 7086, 1433],
+  "initializeCommand": "git submodule update --init --recursive",
   "customizations": {
     "vscode": {
       "extensions": [
+        "ms-dynamics-smb.al",
         "ms-azuretools.vscode-docker"
       ]
     }
   },
-  "postCreateCommand": "git submodule update --init --recursive && echo 'Submodule initialized!'",
-  "remoteUser": "vscode"
+  "remoteUser": "root"
 }
