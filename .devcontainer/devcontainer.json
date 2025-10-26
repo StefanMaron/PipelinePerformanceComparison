@@ -14,5 +14,6 @@
       ]
     }
   },
-  "postCreateCommand": "git submodule update --init --recursive"
+  "postCreateCommand": "git submodule update --init --recursive && echo 'Submodule initialized!'",
+  "remoteUser": "vscode"
 }
