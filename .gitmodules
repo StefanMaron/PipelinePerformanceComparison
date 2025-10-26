@@ -1,0 +1,3 @@
+[submodule ".devcontainer/bcdevonlinux"]
+	path = .devcontainer/bcdevonlinux
+	url = https://github.com/stefanmaron/bcdevonlinux
