@@ -1,0 +1,17 @@
+{
+  "name": "BC Dev Environment",
+  "dockerComposeFile": [
+    "./bcdevonlinux/docker-compose.yml"
+  ],
+  "service": "bc",
+  "workspaceFolder": "/workspace",
+  "forwardPorts": [8080, 7048, 7049, 7449, 1433],
+  "runServices": ["bc", "sql"],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  }
+}
