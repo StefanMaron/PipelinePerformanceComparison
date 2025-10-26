@@ -13,5 +13,6 @@
         "ms-azuretools.vscode-docker"
       ]
     }
-  }
+  },
+  "postCreateCommand": "git submodule update --init --recursive"
 }
