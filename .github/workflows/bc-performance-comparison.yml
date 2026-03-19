@@ -204,15 +204,20 @@ jobs:
 
         # 5. Find installed .NET runtime paths (already on runner, zero download)
         # Needed for standard assemblies: netstandard, System.Core, etc.
+        # IMPORTANT: Exclude .NET 9 and 10 - they crash the AL compiler (same fix as BcContainerHelper v6.1.11)
         $runtimePaths = @()
         try {
           $runtimes = & dotnet --list-runtimes 2>&1
-          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App" } | Select-Object -Last 1
+          Write-Host "Installed runtimes: $($runtimes -join ', ')"
+          # Filter: exclude major versions 9 and 10, prefer highest remaining version
+          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
+            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
           if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
             $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
             if (Test-Path $p) { $runtimePaths += $p; Write-Host "NETCore.App: $p" }
           }
-          $aspRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.AspNetCore\.App" } | Select-Object -Last 1
+          $aspRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.AspNetCore\.App ([0-9]+)\." } |
+            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
           if ($aspRuntime -match "Microsoft\.AspNetCore\.App ([0-9.]+) \[(.+)\]") {
             $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
             if (Test-Path $p) { $runtimePaths += $p; Write-Host "AspNetCore.App: $p" }
@@ -469,9 +474,10 @@ jobs:
         Write-Host "Platform artifact size: $([math]::Round($totalSize / 1MB)) MB"
 
         # 4. Download only the BC service DLLs via HTTP range request
+        # Note: Join-Path with 3 args requires PS7+; use nested calls for PS5.1 compatibility
         $dllOutput = Join-Path $env:RUNNER_TEMP "bc-service-dlls"
         New-Item -ItemType Directory -Path $dllOutput -Force | Out-Null
-        $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts" "download-dotnetpackages.py"
+        $scriptPath = Join-Path (Join-Path $env:GITHUB_WORKSPACE "scripts") "download-dotnetpackages.py"
         Write-Host "Running range download: $scriptPath"
         $result = & python3 $scriptPath $platformUrl $totalSize $dllOutput service-dlls 2>&1
         $result | ForEach-Object { Write-Host $_ }
