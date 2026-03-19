@@ -226,7 +226,8 @@ jobs:
         echo "SETUP_DURATION=$dur" >> $env:GITHUB_ENV
         Write-Host "AL tools install took: $dur seconds"
 
-        # Verify the binary exists — ignore non-zero exit
+        # AL --version exits with code 1 by design; suppress it explicitly
+        $ErrorActionPreference = "Continue"
         AL --version 2>&1 | Write-Host
         exit 0
 
