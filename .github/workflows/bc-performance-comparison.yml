@@ -119,7 +119,7 @@ jobs:
         ls -la .alpackages/
 
         if [ "$APP_COUNT" -eq 0 ]; then
-          echo "ERROR: No symbol .app files were extracted — compilation will fail."
+          echo "ERROR: No symbol .app files were extracted - compilation will fail."
           exit 1
         fi
 
@@ -280,7 +280,7 @@ jobs:
         Get-ChildItem .alpackages
 
         if ($appCount -eq 0) {
-          Write-Host "ERROR: No symbol .app files were extracted — compilation will fail."
+          Write-Host "ERROR: No symbol .app files were extracted - compilation will fail."
           exit 1
         }
 
@@ -456,7 +456,7 @@ jobs:
         while [ $ELAPSED -lt $MAX_WAIT ]; do
           STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_ID" 2>/dev/null || echo "unknown")
           [ "$STATUS" = "healthy" ] && { echo "Container healthy after ${ELAPSED}s"; break; }
-          [ "$STATUS" = "unhealthy" ] && { echo "Container unhealthy — printing logs:"; docker compose logs --tail=50; }
+          [ "$STATUS" = "unhealthy" ] && { echo "Container unhealthy - printing logs:"; docker compose logs --tail=50; }
           echo "Status: $STATUS (${ELAPSED}s elapsed)"
           sleep 15
           ELAPSED=$((ELAPSED + 15))
