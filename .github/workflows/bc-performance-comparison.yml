@@ -220,28 +220,29 @@ jobs:
           Write-Host "OpenXML: $($openXmlDll.Name)"
         }
 
-        # 7. Download .NET shared runtime into dlls/shared/ (same as BcContainerHelper for v22+)
-        # BcContainerHelper downloads the .NET runtime when the local version is too low.
-        # On Linux, this is always needed since there's no Windows .NET Framework fallback.
-        $sharedPath = Join-Path $dllsBase "shared"
+        # 7. Build probing paths: OpenXML, .NET runtime paths (direct, not copies), Service
+        # Use direct runtime paths like the working Windows approach — copying DLLs into
+        # shared/ conflicts with the NuGet AL tools' bundled .NET runtime.
+        $probingPaths = @()
+        if (Test-Path $openXmlPath) { $probingPaths += $openXmlPath }
+
+        # Add .NET runtime paths directly (same approach as Windows)
         try {
           $runtimes = & dotnet --list-runtimes 2>&1
           $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
             Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
           if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
-            $runtimeSrc = Join-Path $Matches[2].Trim('[',']') $Matches[1]
-            Write-Host "Copying .NET runtime to shared/: $runtimeSrc"
-            Copy-Item $runtimeSrc $sharedPath -Recurse -Force
-            $sharedCount = (Get-ChildItem $sharedPath -Filter "*.dll" -EA SilentlyContinue).Count
-            Write-Host "  shared/ DLLs: $sharedCount"
+            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
+            if (Test-Path $p) { $probingPaths += $p; Write-Host "NETCore.App: $p" }
           }
-        } catch { Write-Host "WARNING: Could not copy .NET runtime to shared/: $_" }
+          $aspRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.AspNetCore\.App ([0-9]+)\." } |
+            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
+          if ($aspRuntime -match "Microsoft\.AspNetCore\.App ([0-9.]+) \[(.+)\]") {
+            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
+            if (Test-Path $p) { $probingPaths += $p; Write-Host "AspNetCore.App: $p" }
+          }
+        } catch { Write-Host "WARNING: Could not enumerate .NET runtimes: $_" }
 
-        # 8. Build probing paths exactly like BcContainerHelper:
-        #    OpenXML, shared, Service — comma-separated, this order
-        $probingPaths = @()
-        if (Test-Path $openXmlPath) { $probingPaths += $openXmlPath }
-        if (Test-Path $sharedPath) { $probingPaths += $sharedPath }
         if (Test-Path $servicePath) { $probingPaths += $servicePath }
 
         $serviceCount = (Get-ChildItem $servicePath -Filter "*.dll" -Recurse -EA SilentlyContinue).Count
