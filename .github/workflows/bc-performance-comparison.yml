@@ -813,32 +813,43 @@ jobs:
       run: |
         cd bcdev-temp
         BC_CONTAINER=$(docker compose ps -q bc)
-        CONFIG_PATH="/root/.local/share/wineprefixes/bc1/drive_c/Program Files/Microsoft Dynamics NAV/260/Service/CustomSettings.config"
+        SERVICE_CONFIG="/root/.local/share/wineprefixes/bc1/drive_c/Program Files/Microsoft Dynamics NAV/260/Service/CustomSettings.config"
+        HOME_CONFIG="/home/CustomSettings.config"
 
         echo "Checking current auth config..."
-        CURRENT=$(docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$CONFIG_PATH" 2>&1)
-        echo "  $CURRENT"
+        docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$SERVICE_CONFIG" 2>&1 | head -1
 
-        if echo "$CURRENT" | grep -q '"Windows"'; then
-          echo "Fixing: Windows -> NavUserPassword"
-          docker exec "$BC_CONTAINER" sed -i 's/value="Windows"/value="NavUserPassword"/' "$CONFIG_PATH"
-          echo "Restarting BC server to apply config change..."
-          # Kill the BC server process, Wine will exit, container restarts via unless-stopped
-          docker exec "$BC_CONTAINER" pkill -f "Microsoft.Dynamics.Nav.Server" || true
-          sleep 5
-          # Wait for container to restart and become healthy again
-          CONTAINER_ID=$(docker compose ps -q bc)
-          for i in $(seq 1 60); do
+        echo "Checking source config at /home/..."
+        docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$HOME_CONFIG" 2>&1 | head -1
+
+        # Fix BOTH config files so restart doesn't revert the change
+        echo "Fixing: Windows -> NavUserPassword in BOTH config files"
+        docker exec "$BC_CONTAINER" sed -i 's/value="Windows"/value="NavUserPassword"/' "$SERVICE_CONFIG"
+        docker exec "$BC_CONTAINER" sed -i 's/value="Windows"/value="NavUserPassword"/' "$HOME_CONFIG"
+
+        echo "Restarting BC server to apply config change..."
+        # Kill BC server — container restarts via unless-stopped, entrypoint re-runs
+        # but now /home/CustomSettings.config has NavUserPassword so the force-copy is correct
+        docker exec "$BC_CONTAINER" pkill -f "Microsoft.Dynamics.Nav.Server" || true
+        sleep 5
+
+        # Container might get a new ID after restart
+        for i in $(seq 1 60); do
+          CONTAINER_ID=$(docker compose ps -q bc 2>/dev/null || echo "")
+          if [ -n "$CONTAINER_ID" ]; then
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_ID" 2>/dev/null || echo "unknown")
             [ "$STATUS" = "healthy" ] && { echo "Container healthy again after ${i}x15s"; break; }
             echo "  Waiting for restart... ($STATUS)"
-            sleep 15
-          done
-          echo "Verifying fix:"
-          docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$CONFIG_PATH"
-        else
-          echo "Auth config already correct (not Windows)"
-        fi
+          else
+            echo "  Waiting for container to come back..."
+          fi
+          sleep 15
+        done
+
+        # Re-get container ID after restart
+        BC_CONTAINER=$(docker compose ps -q bc)
+        echo "Verifying fix:"
+        docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$SERVICE_CONFIG" 2>&1 | head -1
         cd ..
 
     - name: Publish app to BC container
