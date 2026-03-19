@@ -313,7 +313,7 @@ jobs:
         # Fix Windows backslash path separators in resource references for Linux.
         # AL compiler on Linux doesn't convert \ to / in ControlAddin resource paths.
         # Replace ALL backslashes within single-quoted path strings in .al files.
-        find "$PROJECT_PATH" -name "*.al" -exec sed -i 's|\\|/|g' {} \;
+        find "$PROJECT_PATH" -name "*.al" -exec grep -li 'controladdin\|ControlAddIn' {} \; | xargs -r sed -i 's|\\|/|g'
         FIXED=$(find "$PROJECT_PATH" -name "*.al" -newer "$PROJECT_PATH/app.json" 2>/dev/null | wc -l)
         echo "Fixed backslash paths in $FIXED .al files"
 
@@ -367,7 +367,7 @@ jobs:
         SYMBOLS_PATH="$(pwd)/.alpackages"
 
         # Fix Windows backslash path separators
-        find "$PROJECT_PATH" -name "*.al" -exec sed -i 's|\\|/|g' {} \;
+        find "$PROJECT_PATH" -name "*.al" -exec grep -li 'controladdin\|ControlAddIn' {} \; | xargs -r sed -i 's|\\|/|g'
 
         EXTRA_ARGS=""
         if [ -n "$DOTNET_PATH" ]; then
@@ -1012,7 +1012,7 @@ jobs:
           echo "Compiling: BCApps System Application"
 
           # Fix Windows backslash path separators
-          find "$PROJECT_PATH" -name "*.al" -exec sed -i 's|\\|/|g' {} \;
+          find "$PROJECT_PATH" -name "*.al" -exec grep -li 'controladdin\|ControlAddIn' {} \; | xargs -r sed -i 's|\\|/|g'
 
           EXTRA_ARGS=""
           if [ -n "$DOTNET_PATH" ]; then
@@ -1063,7 +1063,7 @@ jobs:
         PROJECT_PATH="bcapps-temp/src/System Application/Test"
 
         # Fix Windows backslash path separators
-        find "$PROJECT_PATH" -name "*.al" -exec sed -i 's|\\|/|g' {} \;
+        find "$PROJECT_PATH" -name "*.al" -exec grep -li 'controladdin\|ControlAddIn' {} \; | xargs -r sed -i 's|\\|/|g'
 
         EXTRA_ARGS=""
         if [ -n "$DOTNET_PATH" ]; then
