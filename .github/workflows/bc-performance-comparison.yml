@@ -11,6 +11,14 @@ on:
         options:
           - compile-only
           - full-pipeline
+      compile_target:
+        description: 'What to compile'
+        required: false
+        default: 'bcapps-system-app'
+        type: choice
+        options:
+          - bcapps-system-app
+          - sample-extension
       bc_version:
         description: 'BC version for NuGet symbols (e.g. 26.3.36158.36341)'
         required: false
@@ -28,10 +36,11 @@ env:
   PLATFORM_VERSION: '26.0.38176'
   BC_SYMBOLS_BASE_URL: 'https://dynamicssmb2.pkgs.visualstudio.com/571e802d-b44b-45fc-bd41-4cfddec73b44/_packaging/b656b10c-3de0-440c-900c-bc2e4e86d84c/nuget/v3/flat2'
   # Latest stable AL tools as of 2025-11 (works on both Linux and Windows).
-  # 16.0.24.41895-beta was valid but outdated; 16.2.28.57946 is the current stable.
   AL_TOOLS_VERSION: '16.2.28.57946'
   BCDEV_REPO: 'https://github.com/StefanMaron/BCDevOnLinux.git'
   BCDEV_BRANCH: 'v2'
+  # BCApps branch that targets platform 26.0.0.0 (matches our platform symbols)
+  BCAPPS_BRANCH: 'releases/26.0'
 
 # ============================================================================
 # LINUX COMPILE JOB
@@ -43,6 +52,7 @@ jobs:
     outputs:
       setup_duration: ${{ steps.record.outputs.setup_duration }}
       download_duration: ${{ steps.record.outputs.download_duration }}
+      clone_duration: ${{ steps.record.outputs.clone_duration }}
       compile_duration: ${{ steps.record.outputs.compile_duration }}
       total_duration: ${{ steps.record.outputs.total_duration }}
 
@@ -85,8 +95,6 @@ jobs:
         download_pkg() {
           local name=$1 url=$2 out=$3
           echo "Downloading $name..."
-          # -f: fail on HTTP errors (so we don't silently get an HTML error page)
-          # -L: follow redirects  -s: silent  --retry 3: retry on transient failures
           if curl -f -L -s --retry 3 -o "$out" "$url"; then
             echo "  OK: $(du -sh "$out" | cut -f1)"
           else
@@ -98,13 +106,23 @@ jobs:
         VER="${{ env.BC_VERSION }}"
         PVER="${{ env.PLATFORM_VERSION }}"
 
-        download_pkg "Platform"           "$BASE/microsoft.platform.symbols/$PVER/microsoft.platform.symbols.$PVER.nupkg"                                                                                                  "temp_packages/platform.nupkg"
-        download_pkg "SystemApplication"  "$BASE/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$VER/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$VER.nupkg" "temp_packages/systemapp.nupkg"
-        download_pkg "BaseApplication"    "$BASE/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972/$VER/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972.$VER.nupkg"      "temp_packages/baseapp.nupkg"
-        download_pkg "Application"        "$BASE/microsoft.application.us.symbols/$VER/microsoft.application.us.symbols.$VER.nupkg"                                                                                         "temp_packages/app.nupkg"
-        download_pkg "BusinessFoundation" "$BASE/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$VER/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$VER.nupkg" "temp_packages/bizfoundation.nupkg"
+        # System Application only needs platform symbols, but download all for full-pipeline use
+        download_pkg "Platform" \
+          "$BASE/microsoft.platform.symbols/$PVER/microsoft.platform.symbols.$PVER.nupkg" \
+          "temp_packages/platform.nupkg"
+        download_pkg "SystemApplication" \
+          "$BASE/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$VER/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$VER.nupkg" \
+          "temp_packages/systemapp.nupkg"
+        download_pkg "BaseApplication" \
+          "$BASE/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972/$VER/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972.$VER.nupkg" \
+          "temp_packages/baseapp.nupkg"
+        download_pkg "Application" \
+          "$BASE/microsoft.application.us.symbols/$VER/microsoft.application.us.symbols.$VER.nupkg" \
+          "temp_packages/app.nupkg"
+        download_pkg "BusinessFoundation" \
+          "$BASE/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$VER/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$VER.nupkg" \
+          "temp_packages/bizfoundation.nupkg"
 
-        # Extract .app files from .nupkg (zip) archives
         for pkg in temp_packages/*.nupkg; do
           [ -s "$pkg" ] || { echo "Skipping empty/missing: $pkg"; continue; }
           dir="temp_packages/$(basename "$pkg" .nupkg)"
@@ -128,11 +146,41 @@ jobs:
         echo "DOWNLOAD_DURATION=$DOWNLOAD_DURATION" >> $GITHUB_ENV
         echo "Download + extract took: $DOWNLOAD_DURATION seconds"
 
-    - name: Compile AL extension
+    - name: Clone BCApps System Application
+      if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
       run: |
         STEP_START=$(date +%s.%N)
 
-        AL compile /project:"." /packagecachepath:".alpackages"
+        echo "Cloning microsoft/BCApps branch ${{ env.BCAPPS_BRANCH }} (depth 1)..."
+        git clone \
+          --depth 1 \
+          --branch ${{ env.BCAPPS_BRANCH }} \
+          --single-branch \
+          https://github.com/microsoft/BCApps \
+          bcapps-temp
+
+        AL_COUNT=$(find bcapps-temp/src/System\ Application/App -name "*.al" | wc -l)
+        echo "AL source files found: $AL_COUNT"
+
+        STEP_END=$(date +%s.%N)
+        CLONE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "CLONE_DURATION=$CLONE_DURATION" >> $GITHUB_ENV
+        echo "Clone took: $CLONE_DURATION seconds"
+
+    - name: Compile AL extension
+      run: |
+        STEP_START=$(date +%s.%N)
+        SYMBOLS_PATH="$(pwd)/.alpackages"
+
+        if [ "${{ inputs.compile_target }}" = "bcapps-system-app" ] || [ -z "${{ inputs.compile_target }}" ]; then
+          PROJECT_PATH="bcapps-temp/src/System Application/App"
+          echo "Compiling: BCApps System Application"
+        else
+          PROJECT_PATH="."
+          echo "Compiling: sample extension"
+        fi
+
+        AL compile /project:"$PROJECT_PATH" /packagecachepath:"$SYMBOLS_PATH"
         AL_EXIT=$?
 
         STEP_END=$(date +%s.%N)
@@ -146,7 +194,11 @@ jobs:
         fi
 
         echo "Compiled app files:"
-        ls -la *.app 2>/dev/null || echo "No .app files found in project root"
+        find "$PROJECT_PATH" -maxdepth 1 -name "*.app" -exec ls -la {} \; 2>/dev/null || true
+        find . -maxdepth 1 -name "*.app" -exec ls -la {} \; 2>/dev/null || true
+
+        # Copy output .app to root for artifact upload
+        find "$PROJECT_PATH" -maxdepth 1 -name "*.app" -exec cp {} . \; 2>/dev/null || true
 
     - name: Record metrics
       id: record
@@ -156,23 +208,30 @@ jobs:
         echo "total_duration=$TOTAL"                   >> $GITHUB_OUTPUT
         echo "setup_duration=$SETUP_DURATION"          >> $GITHUB_OUTPUT
         echo "download_duration=$DOWNLOAD_DURATION"    >> $GITHUB_OUTPUT
+        echo "clone_duration=${CLONE_DURATION:-0}"     >> $GITHUB_OUTPUT
         echo "compile_duration=$COMPILE_DURATION"      >> $GITHUB_OUTPUT
 
-        # Write JSON via printf (avoids YAML block-scalar indentation issues with bare heredocs)
+        COMPILE_TARGET="${{ inputs.compile_target }}"
+        [ -z "$COMPILE_TARGET" ] && COMPILE_TARGET="bcapps-system-app"
+
         printf '{
           "platform": "linux",
           "runner": "ubuntu-latest",
           "pipeline_type": "compile-only",
+          "compile_target": "%s",
           "total_duration": %s,
           "setup_duration": %s,
           "download_duration": %s,
+          "clone_duration": %s,
           "compile_duration": %s,
           "timestamp": "%s",
           "github_run_id": "%s",
           "al_tools_version": "${{ env.AL_TOOLS_VERSION }}",
           "bc_version": "${{ env.BC_VERSION }}"
         }\n' \
-          "$TOTAL" "${SETUP_DURATION:-0}" "${DOWNLOAD_DURATION:-0}" "${COMPILE_DURATION:-0}" \
+          "$COMPILE_TARGET" \
+          "$TOTAL" "${SETUP_DURATION:-0}" "${DOWNLOAD_DURATION:-0}" \
+          "${CLONE_DURATION:-0}" "${COMPILE_DURATION:-0}" \
           "$(date -Iseconds)" "$GITHUB_RUN_ID" \
           > linux-compile-metrics.json
         echo "Metrics saved to linux-compile-metrics.json"
@@ -195,6 +254,7 @@ jobs:
     outputs:
       setup_duration: ${{ steps.record.outputs.setup_duration }}
       download_duration: ${{ steps.record.outputs.download_duration }}
+      clone_duration: ${{ steps.record.outputs.clone_duration }}
       compile_duration: ${{ steps.record.outputs.compile_duration }}
       total_duration: ${{ steps.record.outputs.total_duration }}
 
@@ -249,22 +309,22 @@ jobs:
           } catch { Write-Host "  WARNING: $name - $($_.Exception.Message)" }
         }
 
-        dl "platform"      "$b/microsoft.platform.symbols/$p/microsoft.platform.symbols.$p.nupkg" "temp_packages\platform.nupkg"
+        # System Application only needs platform symbols, but download all for full-pipeline use
+        dl "platform" "$b/microsoft.platform.symbols/$p/microsoft.platform.symbols.$p.nupkg" "temp_packages\platform.nupkg"
         $id1 = "63ca2fa4-4f03-4f2b-a480-172fef340d3f"
-        dl "systemapp"     "$b/microsoft.systemapplication.us.symbols.$id1/$v/microsoft.systemapplication.us.symbols.$id1.$v.nupkg" "temp_packages\systemapp.nupkg"
+        dl "systemapp" "$b/microsoft.systemapplication.us.symbols.$id1/$v/microsoft.systemapplication.us.symbols.$id1.$v.nupkg" "temp_packages\systemapp.nupkg"
         $id2 = "437dbf0e-84ff-417a-965d-ed2bb9650972"
-        dl "baseapp"       "$b/microsoft.baseapplication.us.symbols.$id2/$v/microsoft.baseapplication.us.symbols.$id2.$v.nupkg" "temp_packages\baseapp.nupkg"
-        dl "app"           "$b/microsoft.application.us.symbols/$v/microsoft.application.us.symbols.$v.nupkg" "temp_packages\app.nupkg"
+        dl "baseapp" "$b/microsoft.baseapplication.us.symbols.$id2/$v/microsoft.baseapplication.us.symbols.$id2.$v.nupkg" "temp_packages\baseapp.nupkg"
+        dl "app" "$b/microsoft.application.us.symbols/$v/microsoft.application.us.symbols.$v.nupkg" "temp_packages\app.nupkg"
         $id3 = "f3552374-a1f2-4356-848e-196002525837"
         dl "bizfoundation" "$b/microsoft.businessfoundation.us.symbols.$id3/$v/microsoft.businessfoundation.us.symbols.$id3.$v.nupkg" "temp_packages\bizfoundation.nupkg"
 
-        # Extract .app files from each .nupkg (which are zip files)
         Get-ChildItem temp_packages -Filter "*.nupkg" | Where-Object { $_.Length -gt 0 } | ForEach-Object {
           Write-Host "Extracting $($_.Name)..."
           $dir = "temp_packages\$($_.BaseName)"
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
           $zip = $_.FullName -replace '\.nupkg$', '.zip'
-          Copy-Item $_.FullName $zip   # copy instead of rename so original stays for diagnostics
+          Copy-Item $_.FullName $zip
           try { Expand-Archive -Path $zip -DestinationPath $dir -Force } catch { Write-Host "  Extract warning: $_" }
           Remove-Item $zip -EA SilentlyContinue
         }
@@ -288,18 +348,45 @@ jobs:
         echo "DOWNLOAD_DURATION=$dur" >> $env:GITHUB_ENV
         Write-Host "Download + extract took: $dur seconds"
 
+    - name: Clone BCApps System Application
+      if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
+      shell: powershell
+      run: |
+        $start = Get-Date
+        $branch = "${{ env.BCAPPS_BRANCH }}"
+
+        Write-Host "Cloning microsoft/BCApps branch $branch (depth 1)..."
+        git clone --depth 1 --branch $branch --single-branch https://github.com/microsoft/BCApps bcapps-temp
+
+        $alCount = (Get-ChildItem "bcapps-temp\src\System Application\App" -Filter "*.al" -Recurse).Count
+        Write-Host "AL source files found: $alCount"
+
+        $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
+        echo "CLONE_DURATION=$dur" >> $env:GITHUB_ENV
+        Write-Host "Clone took: $dur seconds"
+
     - name: Compile AL extension
       shell: powershell
       run: |
         $start = Get-Date
+        $symbolsPath = "$PWD\.alpackages"
+        $target = "${{ inputs.compile_target }}"
+        if ([string]::IsNullOrEmpty($target)) { $target = "bcapps-system-app" }
+
+        if ($target -eq "bcapps-system-app") {
+          $projectPath = "bcapps-temp\src\System Application\App"
+          Write-Host "Compiling: BCApps System Application"
+        } else {
+          $projectPath = "."
+          Write-Host "Compiling: sample extension"
+        }
 
         # Capture exit code without letting PowerShell throw on non-zero
         $ErrorActionPreference = "Continue"
-        AL compile /project:"." /packagecachepath:".alpackages"
+        AL compile /project:"$projectPath" /packagecachepath:"$symbolsPath"
         $alExit = $LASTEXITCODE
         $ErrorActionPreference = "Stop"
 
-        # Always record duration regardless of outcome
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
         echo "COMPILE_DURATION=$dur" >> $env:GITHUB_ENV
         Write-Host "Compilation took: $dur seconds"
@@ -311,8 +398,9 @@ jobs:
 
         Write-Host "Compilation successful"
         Write-Host "Compiled app files:"
-        Get-ChildItem "*.app" -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-ChildItem $projectPath -Filter "*.app" -EA SilentlyContinue | ForEach-Object {
           Write-Host "  $($_.Name) ($([math]::Round($_.Length / 1KB, 1)) KB)"
+          Copy-Item $_.FullName "." -Force
         }
 
     - name: Record metrics
@@ -323,18 +411,24 @@ jobs:
         $startTime = [DateTime]::Parse($env:BUILD_START_TIME)
         $total     = [math]::Round(($endTime - $startTime).TotalSeconds, 3)
 
+        $target = "${{ inputs.compile_target }}"
+        if ([string]::IsNullOrEmpty($target)) { $target = "bcapps-system-app" }
+
         echo "total_duration=$total"                       >> $env:GITHUB_OUTPUT
         echo "setup_duration=$env:SETUP_DURATION"         >> $env:GITHUB_OUTPUT
         echo "download_duration=$env:DOWNLOAD_DURATION"   >> $env:GITHUB_OUTPUT
+        echo "clone_duration=$env:CLONE_DURATION"         >> $env:GITHUB_OUTPUT
         echo "compile_duration=$env:COMPILE_DURATION"     >> $env:GITHUB_OUTPUT
 
         @{
           platform          = "windows"
           runner            = "windows-2022"
           pipeline_type     = "compile-only"
+          compile_target    = $target
           total_duration    = $total
           setup_duration    = [double]$env:SETUP_DURATION
           download_duration = [double]$env:DOWNLOAD_DURATION
+          clone_duration    = if ($env:CLONE_DURATION) { [double]$env:CLONE_DURATION } else { 0.0 }
           compile_duration  = [double]$env:COMPILE_DURATION
           timestamp         = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
           github_run_id     = $env:GITHUB_RUN_ID
@@ -395,11 +489,16 @@ jobs:
         VER="${{ env.BC_VERSION }}"
         PVER="${{ env.PLATFORM_VERSION }}"
 
-        curl -f -L -s --retry 3 -o temp_packages/platform.nupkg      "$BASE/microsoft.platform.symbols/$PVER/microsoft.platform.symbols.$PVER.nupkg"
-        curl -f -L -s --retry 3 -o temp_packages/systemapp.nupkg     "$BASE/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$VER/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$VER.nupkg"
-        curl -f -L -s --retry 3 -o temp_packages/baseapp.nupkg       "$BASE/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972/$VER/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972.$VER.nupkg"
-        curl -f -L -s --retry 3 -o temp_packages/app.nupkg           "$BASE/microsoft.application.us.symbols/$VER/microsoft.application.us.symbols.$VER.nupkg"
-        curl -f -L -s --retry 3 -o temp_packages/bizfoundation.nupkg "$BASE/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$VER/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$VER.nupkg"
+        curl -f -L -s --retry 3 -o temp_packages/platform.nupkg \
+          "$BASE/microsoft.platform.symbols/$PVER/microsoft.platform.symbols.$PVER.nupkg"
+        curl -f -L -s --retry 3 -o temp_packages/systemapp.nupkg \
+          "$BASE/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$VER/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$VER.nupkg"
+        curl -f -L -s --retry 3 -o temp_packages/baseapp.nupkg \
+          "$BASE/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972/$VER/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972.$VER.nupkg"
+        curl -f -L -s --retry 3 -o temp_packages/app.nupkg \
+          "$BASE/microsoft.application.us.symbols/$VER/microsoft.application.us.symbols.$VER.nupkg"
+        curl -f -L -s --retry 3 -o temp_packages/bizfoundation.nupkg \
+          "$BASE/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$VER/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$VER.nupkg"
 
         for pkg in temp_packages/*.nupkg; do
           [ -s "$pkg" ] || continue
@@ -727,7 +826,7 @@ jobs:
         retention-days: 30
 
 # ============================================================================
-# COMPARISON JOB  — runs after both platform jobs complete
+# COMPARISON JOB  -- runs after both platform jobs complete
 #
 # IMPORTANT: linux-full and windows-full are conditional on run_type == 'full-pipeline'.
 # GitHub Actions treats a skipped job as a failed dependency if it appears in
@@ -750,8 +849,6 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         path: ./metrics
-      # Continue even if some artifacts are absent (e.g. full-pipeline artifacts
-      # won't exist on compile-only runs)
       continue-on-error: true
 
     - name: Fetch GitHub Actions job timings
@@ -803,9 +900,12 @@ jobs:
         linux_full      = load_json('linux-full-metrics.json')
         windows_full    = load_json('windows-full-metrics.json')
 
-        run_type = "${{ inputs.run_type }}"
-        desc     = "${{ inputs.description }}"
-        bc_ver   = "${{ env.BC_VERSION }}"
+        run_type       = "${{ inputs.run_type }}"
+        compile_target = "${{ inputs.compile_target }}" or "bcapps-system-app"
+        desc           = "${{ inputs.description }}"
+        bc_ver         = "${{ env.BC_VERSION }}"
+
+        target_label = "BCApps System Application" if compile_target == "bcapps-system-app" else "Sample Extension"
 
         def fmt(val, unit='s'):
             if val is None: return 'N/A'
@@ -830,24 +930,29 @@ jobs:
         lines.append('# BC Pipeline Performance: Linux vs Windows\n')
         if desc:
             lines.append(f'> {desc}\n')
-        lines.append(f'*BC version: `{bc_ver}` | AL tools: `${{ env.AL_TOOLS_VERSION }}` | Run: `${{ github.run_id }}`*\n')
+        lines.append(f'*Compile target: `{target_label}` | BC version: `{bc_ver}` | AL tools: `${{ env.AL_TOOLS_VERSION }}` | Run: `${{ github.run_id }}`*\n')
         lines.append(f'*Generated: {datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}*\n')
 
-        # ── Compile comparison ─────────────────────────────────────────────────
+        # -- Compile comparison ------------------------------------------------
         lines.append('\n## Compile-Only Performance\n')
         if linux_compile and windows_compile:
             lc, wc = linux_compile, windows_compile
-            # gh timing slugs must match the job `name:` field converted to lowercase-hyphen
             lc_gh = load_gh_timing('linux---compile')
             wc_gh = load_gh_timing('windows---compile')
 
+            has_clone = lc.get('clone_duration') or wc.get('clone_duration')
+
             rows = [
-                ('Phase',                   'Linux (ubuntu-latest)',                        'Windows (windows-2022)',                       'Difference'),
-                ('---',                     '---',                                          '---',                                          '---'),
-                ('Setup (AL tools install)', fmt(lc.get('setup_duration')),                 fmt(wc.get('setup_duration')),                  speedup(lc.get('setup_duration'),    wc.get('setup_duration'))),
-                ('Symbol download',          fmt(lc.get('download_duration')),              fmt(wc.get('download_duration')),               speedup(lc.get('download_duration'), wc.get('download_duration'))),
-                ('AL compilation',           fmt(lc.get('compile_duration')),               fmt(wc.get('compile_duration')),                speedup(lc.get('compile_duration'),  wc.get('compile_duration'))),
-                ('**Total (measured)**',     f"**{fmt(lc.get('total_duration'))}**",        f"**{fmt(wc.get('total_duration'))}**",         f"**{speedup(lc.get('total_duration'), wc.get('total_duration'))}**"),
+                ('Phase',                    'Linux (ubuntu-latest)',                        'Windows (windows-2022)',                       'Difference'),
+                ('---',                      '---',                                          '---',                                          '---'),
+                ('Setup (AL tools install)', fmt(lc.get('setup_duration')),                  fmt(wc.get('setup_duration')),                  speedup(lc.get('setup_duration'),    wc.get('setup_duration'))),
+                ('Symbol download',          fmt(lc.get('download_duration')),               fmt(wc.get('download_duration')),               speedup(lc.get('download_duration'), wc.get('download_duration'))),
+            ]
+            if has_clone:
+                rows.append(('BCApps clone', fmt(lc.get('clone_duration')), fmt(wc.get('clone_duration')), speedup(lc.get('clone_duration'), wc.get('clone_duration'))))
+            rows += [
+                ('AL compilation',            fmt(lc.get('compile_duration')),               fmt(wc.get('compile_duration')),                speedup(lc.get('compile_duration'),  wc.get('compile_duration'))),
+                ('**Total (measured)**',      f"**{fmt(lc.get('total_duration'))}**",        f"**{fmt(wc.get('total_duration'))}**",         f"**{speedup(lc.get('total_duration'), wc.get('total_duration'))}**"),
             ]
             if lc_gh is not None or wc_gh is not None:
                 rows.append(('GitHub Actions total', fmt(lc_gh), fmt(wc_gh), speedup(lc_gh, wc_gh)))
@@ -856,7 +961,7 @@ jobs:
         else:
             lines.append('_Compile metrics not available (one or both jobs failed or were skipped)._\n')
 
-        # ── Full pipeline comparison ───────────────────────────────────────────
+        # -- Full pipeline comparison ------------------------------------------
         if run_type == 'full-pipeline':
             lines.append('\n## Full Pipeline Performance\n')
             if linux_full and windows_full:
