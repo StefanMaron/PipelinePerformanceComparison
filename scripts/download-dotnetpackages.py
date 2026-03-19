@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Download dotnetpackages from BC platform artifact using HTTP Range requests.
+Download files from a BC artifact ZIP using HTTP Range requests.
 
-Usage: python3 download-dotnetpackages.py <artifact_url> <total_size> <output_dir>
+Usage:
+  python3 download-dotnetpackages.py <artifact_url> <total_size> <output_dir> [mode]
 
-Downloads only the 'dotnetpackages/' folder from the BC platform artifact
-using HTTP Range requests, without downloading the full multi-GB archive.
+Modes:
+  dotnetpackages  (default) - Extract *.dotnetpackage XML files from the
+                              'dotnetpackages/' folder in a w1/country artifact.
+  service-dlls              - Extract *.dll files from the ServiceTier/*/Service/
+                              directory in the platform artifact.
 
-The artifact_url and total_size should be obtained beforehand (e.g. via
+The artifact_url and total_size are obtained beforehand (e.g. via
 Get-BCArtifactUrl + a HEAD request in PowerShell) so this script works
 without any dependency on BcContainerHelper.
-
-The dotnetpackages/*.dotnetpackage XML files are the DotNet type definitions
-the AL compiler needs when building apps that use DotNet interop (AL0185).
-Pass the output_dir path to the compiler via /assemblyProbingPaths.
 
 Exits 0 on success, 1 on failure.
 """
@@ -73,20 +73,37 @@ def parse_central_directory(data, cd_start, entry_count):
     return entries
 
 
+def find_matching_entries(entries, mode):
+    """Return list of non-empty file entries matching the given mode."""
+    if mode == 'service-dlls':
+        # DLL files from ServiceTier/*/Service/ in the platform artifact
+        return [
+            e for e in entries
+            if 'servicetier/' in e['name'].lower()
+            and '/service/' in e['name'].lower()
+            and e['name'].lower().endswith('.dll')
+            and e['comp_size'] > 0
+        ]
+    else:
+        # dotnetpackages mode: *.dotnetpackage XML files
+        return [e for e in entries if 'dotnetpackages/' in e['name'].lower() and e['comp_size'] > 0]
+
+
 def main():
-    if len(sys.argv) != 4:
-        print("Usage: download-dotnetpackages.py <artifact_url> <total_size> <output_dir>")
+    if len(sys.argv) < 4 or len(sys.argv) > 5:
+        print("Usage: download-dotnetpackages.py <artifact_url> <total_size> <output_dir> [mode]")
+        print("  mode: dotnetpackages (default) | service-dlls")
         sys.exit(1)
 
     url        = sys.argv[1]
     total_size = int(sys.argv[2])
     output_dir = sys.argv[3]
-    prefix     = 'dotnetpackages/'
+    mode       = sys.argv[4] if len(sys.argv) == 5 else 'dotnetpackages'
 
     print(f"Artifact  : {url}")
     print(f"Size      : {total_size:,} bytes ({total_size / 1024 / 1024:.0f} MB)")
     print(f"Output    : {output_dir}")
-    print(f"Prefix    : {prefix}")
+    print(f"Mode      : {mode}")
     print()
 
     os.makedirs(output_dir, exist_ok=True)
@@ -131,34 +148,15 @@ def main():
         tops = sorted({e['name'].split('/')[0] for e in entries if '/' in e['name']})
         print(f"Top-level folders: {tops[:20]}")
 
-        # Print unique second-level paths to help locate dotnet-related files
-        second_level = sorted({'/'.join(e['name'].split('/')[:2]) for e in entries if '/' in e['name']})
-        print(f"Second-level paths (sample): {second_level[:30]}")
-
-        # Print any entries that look like dotnet type definitions
-        dotnet_hints = [e['name'] for e in entries if
-                        '.dotnetpackage' in e['name'].lower() or
-                        'dotnetpackage' in e['name'].lower() or
-                        ('dotnet' in e['name'].lower() and e['name'].endswith('/') is False)]
-        print(f"Dotnet-related entries (first 10): {dotnet_hints[:10]}")
-        print()
-
-        # Step 3: Find dotnetpackages/ entries — search anywhere in the path
-        # (artifact structure varies across BC versions; the folder may be nested)
-        matching = [e for e in entries if 'dotnetpackages/' in e['name'].lower() and e['comp_size'] > 0]
-        print(f"Entries containing 'dotnetpackages/': {len(matching)} files")
+        # Step 3: Find entries matching mode
+        matching = find_matching_entries(entries, mode)
+        print(f"Matching entries ({mode}): {len(matching)} files")
 
         if not matching:
-            print(f"ERROR: No dotnetpackages entries found anywhere in the archive.")
-            print("See second-level paths and dotnet-related entries above to identify the correct location.")
+            second_level = sorted({'/'.join(e['name'].split('/')[:2]) for e in entries if '/' in e['name']})
+            print(f"Second-level paths (sample): {second_level[:30]}")
+            print(f"ERROR: No entries found for mode '{mode}'")
             sys.exit(1)
-
-        # Determine the archive prefix (everything up to and including 'dotnetpackages/')
-        # Files are extracted flat (basename only) into output_dir
-        sample = matching[0]['name']
-        pkg_start = sample.index('dotnetpackages/')
-        strip_prefix = sample[:pkg_start + len('dotnetpackages/')]
-        print(f"Found dotnetpackages at archive path: '{strip_prefix}'")
 
         # Step 4: Calculate the byte range that covers all matching entries
         first_offset = min(e['offset'] for e in matching)
@@ -177,8 +175,8 @@ def main():
             range_end = max(range_end, entry_end)
 
         download_size = range_end - first_offset
-        if download_size > total_size * 0.5:
-            print(f"ERROR: Range ({download_size // 1048576} MB) exceeds 50% of total ({total_size // 1048576} MB), aborting")
+        if download_size > total_size * 0.8:
+            print(f"ERROR: Range ({download_size // 1048576} MB) exceeds 80% of total ({total_size // 1048576} MB), aborting")
             sys.exit(1)
 
         savings = round((1 - download_size / total_size) * 100)
@@ -194,7 +192,7 @@ def main():
         print(f"Downloaded {len(data):,} bytes")
         print()
 
-        # Step 6: Extract all files from dotnetpackages/ out of the range buffer
+        # Step 6: Extract all matching files from the range buffer (flat into output_dir)
         extracted   = 0
         total_bytes = 0
         for entry in matching:
@@ -239,7 +237,8 @@ def main():
                 f.write(file_data)
             extracted   += 1
             total_bytes += len(file_data)
-            print(f"  {basename}  ({len(file_data):,} B)")
+            if extracted <= 5 or extracted % 100 == 0:
+                print(f"  {basename}  ({len(file_data):,} B)")
 
         print()
         print(f"Extracted : {extracted} files  ({total_bytes // 1024} KB)")
