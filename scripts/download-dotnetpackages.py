@@ -74,19 +74,56 @@ def parse_central_directory(data, cd_start, entry_count):
 
 
 def is_managed_assembly(data):
-    """Return True if the bytes represent a managed .NET assembly.
+    """Return True if the bytes represent a managed .NET PE assembly.
 
-    All .NET managed assemblies contain the 4-byte CLI metadata signature 'BSJB'
-    near the start of the file. Native DLLs (C++, mixed-mode native) do not.
-    Filtering to managed-only prevents the AL compiler from crashing on Linux
-    when it tries to reflect on a native Windows DLL.
+    Checks PE header → optional header → data directory #14 (CLR Runtime Header).
+    A non-zero RVA in that slot means the PE has a CLR header → managed code.
+    This is the same check .NET's PEReader uses and is more reliable than BSJB scanning.
     """
-    return b'BSJB' in data[:131072]  # metadata is always within the first 128 KB
+    if len(data) < 64:
+        return False
+    # DOS header: e_lfanew at offset 0x3C
+    if data[:2] != b'MZ':
+        return False
+    pe_offset = struct.unpack_from('<I', data, 0x3C)[0]
+    if pe_offset + 24 > len(data):
+        return False
+    if data[pe_offset:pe_offset+4] != b'PE\x00\x00':
+        return False
+    # COFF header: 20 bytes starting at pe_offset+4
+    # Optional header starts at pe_offset+24
+    opt_offset = pe_offset + 24
+    if opt_offset + 2 > len(data):
+        return False
+    magic = struct.unpack_from('<H', data, opt_offset)[0]
+    # PE32 = 0x10b (data dirs at offset 96), PE32+ = 0x20b (data dirs at offset 112)
+    if magic == 0x10b:
+        dd_offset = opt_offset + 96
+    elif magic == 0x20b:
+        dd_offset = opt_offset + 112
+    else:
+        return False
+    # Data directory #14 (index 14) = CLR Runtime Header, each entry is 8 bytes (RVA + size)
+    clr_dd_offset = dd_offset + 14 * 8
+    if clr_dd_offset + 8 > len(data):
+        return False
+    clr_rva = struct.unpack_from('<I', data, clr_dd_offset)[0]
+    return clr_rva != 0
+
+
+# Filename prefixes that belong to the .NET runtime itself (not BC-specific).
+# The AL tools NuGet package bundles its own .NET 8 runtime, so these are redundant
+# on Linux and cause SIGABRT when they're Windows-native binaries.
+_RUNTIME_DLL_PREFIXES = (
+    'system.', 'microsoft.extensions.', 'microsoft.win32.',
+    'microsoft.csharp.', 'microsoft.visualbasic.', 'netstandard.',
+    'mscorlib.', 'windowsbase.',
+)
 
 
 def find_matching_entries(entries, mode):
     """Return list of non-empty file entries matching the given mode."""
-    if mode == 'service-dlls':
+    if mode in ('service-dlls', 'bc-managed-dlls'):
         # DLL files from ServiceTier/*/Service/ in the platform artifact.
         # Exclude subdirectories that BcContainerHelper removes (their DLLs can
         # overwrite the primary Service/ DLLs during flat extraction).
@@ -111,7 +148,7 @@ def find_matching_entries(entries, mode):
 def main():
     if len(sys.argv) < 4 or len(sys.argv) > 5:
         print("Usage: download-dotnetpackages.py <artifact_url> <total_size> <output_dir> [mode]")
-        print("  mode: dotnetpackages (default) | service-dlls")
+        print("  mode: dotnetpackages (default) | service-dlls | bc-managed-dlls")
         sys.exit(1)
 
     url        = sys.argv[1]
@@ -250,6 +287,14 @@ def main():
             else:
                 print(f"  WARNING: Unsupported compression {entry['comp_method']} for {basename}, skipping")
                 continue
+
+            # bc-managed-dlls mode: skip .NET runtime DLLs and native (non-managed) binaries
+            if mode == 'bc-managed-dlls':
+                basename_lower = basename.lower()
+                if any(basename_lower.startswith(p) for p in _RUNTIME_DLL_PREFIXES):
+                    continue
+                if not is_managed_assembly(file_data):
+                    continue
 
             out_path = os.path.join(output_dir, basename)
             with open(out_path, 'wb') as f:
