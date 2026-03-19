@@ -896,6 +896,7 @@ jobs:
 
     - name: Publish test toolkit apps to BC container
       run: |
+        set +e  # Don't fail on individual publish errors
         STEP_START=$(date +%s.%N)
         PUBLISH_URL="http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
 
@@ -911,29 +912,46 @@ jobs:
         )
 
         PUBLISHED=0
+        FAILED=0
         for app in "${TOOLKIT_APPS[@]}"; do
           APP_PATH="test-toolkit-apps/$app"
           if [ -f "$APP_PATH" ]; then
-            echo "Publishing: $app"
-            HTTP_CODE=$(curl -s -o /tmp/publish-response.txt -w "%{http_code}" \
-              -u "admin:Admin123!" -F "file=@$APP_PATH" "$PUBLISH_URL")
+            echo "Publishing: $app ($(stat -c%s "$APP_PATH" 2>/dev/null || echo '?') bytes)"
+            # Use 120s timeout; retry once on connection failure
+            for attempt in 1 2; do
+              HTTP_CODE=$(curl -s -m 120 -o /tmp/publish-response.txt -w "%{http_code}" \
+                -u "admin:Admin123!" -F "file=@$APP_PATH" "$PUBLISH_URL" 2>/dev/null)
+              CURL_EXIT=$?
+              [ "$CURL_EXIT" = "0" ] && break
+              echo "  curl exit $CURL_EXIT on attempt $attempt, waiting 10s..."
+              sleep 10
+            done
             if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
               echo "  → OK (HTTP $HTTP_CODE)"
               PUBLISHED=$((PUBLISHED + 1))
             else
-              echo "  → FAILED (HTTP $HTTP_CODE)"
+              echo "  → FAILED (HTTP $HTTP_CODE, curl exit $CURL_EXIT)"
               cat /tmp/publish-response.txt 2>/dev/null | head -5
+              FAILED=$((FAILED + 1))
             fi
+            # Brief pause between publishes to let BC process schema sync
+            sleep 3
           else
             echo "WARNING: $app not found in test-toolkit-apps/, skipping"
           fi
         done
 
         echo ""
-        echo "Published $PUBLISHED test toolkit apps"
+        echo "Published $PUBLISHED test toolkit apps ($FAILED failed)"
         STEP_END=$(date +%s.%N)
         TOOLKIT_PUBLISH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
         echo "TOOLKIT_PUBLISH_DURATION=$TOOLKIT_PUBLISH_DURATION" >> $GITHUB_ENV
+
+        # Fail only if zero apps were published
+        if [ "$PUBLISHED" = "0" ]; then
+          echo "ERROR: No test toolkit apps published"
+          exit 1
+        fi
 
     - name: Publish compiled app to BC container
       run: |
