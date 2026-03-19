@@ -275,6 +275,12 @@ jobs:
           echo "Compiling: sample extension"
         fi
 
+        # Fix Windows backslash path separators in resource references for Linux
+        # AL compiler on Linux doesn't convert \ to / in ControlAddin resource paths
+        find "$PROJECT_PATH" -name "*.al" -exec sed -i "s|'Resources\\\\|'Resources/|g" {} \;
+        FIXED=$(grep -rl "Resources/" "$PROJECT_PATH" --include="*.al" 2>/dev/null | wc -l)
+        echo "Fixed backslash paths in $FIXED .al files"
+
         EXTRA_ARGS=""
         if [ -n "$DOTNET_PATH" ]; then
           EXTRA_ARGS="/assemblyProbingPaths:$DOTNET_PATH"
