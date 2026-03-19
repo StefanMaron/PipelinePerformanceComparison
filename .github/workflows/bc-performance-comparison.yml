@@ -168,7 +168,7 @@ jobs:
         echo "CLONE_DURATION=$CLONE_DURATION" >> $GITHUB_ENV
         echo "Clone took: $CLONE_DURATION seconds"
 
-    - name: Setup BC compiler folder (dotnet packages)
+    - name: Download dotnet packages (range download)
       if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
       shell: pwsh
       run: |
@@ -176,36 +176,28 @@ jobs:
         Install-Module -Name BcContainerHelper -Force -AllowClobber -Scope CurrentUser | Out-Null
         Import-Module BcContainerHelper -Force -DisableNameChecking
 
-        # Use latest BC 26 - dotnet packages are compatible across minor versions
-        # Avoid pinning exact version: artifact index may not contain every build
-        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
-        Write-Host "Artifact URL: $artifactUrl"
-        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
+        # Get latest BC 26 W1 artifact URL, then derive the platform artifact URL from it
+        $w1Url = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
+        if (-not $w1Url) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
+        $platformUrl = $w1Url -replace '/w1$', '/platform'
+        Write-Host "Platform artifact URL: $platformUrl"
 
-        # Use absolute path to avoid BcContainerHelper path-doubling bug on Linux with relative paths
-        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder (Join-Path $env:RUNNER_TEMP "bc-compiler-cache")
-        Write-Host "Compiler folder: $compilerFolder"
+        # HEAD request to get file size (required by the range-download script)
+        $response = Invoke-WebRequest -Uri $platformUrl -Method Head -UseBasicParsing
+        $totalSize = [long]($response.Headers['Content-Length'] | Select-Object -First 1)
+        Write-Host "Platform artifact size: $([math]::Round($totalSize / 1MB)) MB"
 
-        $dotnetPath = Join-Path $compilerFolder "dotnetpackages"
-        if (Test-Path $dotnetPath) {
-          $count = (Get-ChildItem $dotnetPath -Recurse -File).Count
-          Write-Host "dotnetpackages: $dotnetPath ($count files)"
-        } else {
-          Write-Host "WARNING: dotnetpackages not at $dotnetPath"
-          Get-ChildItem $compilerFolder | Select-Object Name | Write-Host
-        }
+        $outDir = Join-Path $env:RUNNER_TEMP "dotnetpackages"
+        python3 scripts/download-dotnetpackages.py $platformUrl $totalSize $outDir
+        if ($LASTEXITCODE -ne 0) { throw "dotnet packages download failed (exit $LASTEXITCODE)" }
 
-        # Patch BCApps app.json with the dotnet packages path
-        $appJson = "bcapps-temp/src/System Application/App/app.json"
-        $data = Get-Content $appJson | ConvertFrom-Json
-        $data | Add-Member -NotePropertyName assemblyProbingPaths `
-          -NotePropertyValue @($dotnetPath) -Force
-        $data | ConvertTo-Json -Depth 10 | Out-File $appJson -Encoding UTF8
-        Write-Host "Patched assemblyProbingPaths -> $dotnetPath"
+        $count = (Get-ChildItem $outDir -File).Count
+        Write-Host "dotnetpackages extracted: $count files in $outDir"
+        echo "DOTNET_PATH=$outDir" >> $env:GITHUB_ENV
 
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
         echo "DOTNET_DL_DURATION=$dur" >> $env:GITHUB_ENV
-        Write-Host "Compiler folder setup took: $dur seconds"
+        Write-Host "Dotnet packages download took: $dur seconds"
 
     - name: Compile AL extension
       run: |
@@ -220,7 +212,11 @@ jobs:
           echo "Compiling: sample extension"
         fi
 
-        AL compile /project:"$PROJECT_PATH" /packagecachepath:"$SYMBOLS_PATH"
+        EXTRA_ARGS=""
+        if [ -n "$DOTNET_PATH" ]; then
+          EXTRA_ARGS="/assemblyProbingPaths:\"$DOTNET_PATH\""
+        fi
+        AL compile /project:"$PROJECT_PATH" /packagecachepath:"$SYMBOLS_PATH" $EXTRA_ARGS
         AL_EXIT=$?
 
         STEP_END=$(date +%s.%N)
@@ -411,47 +407,35 @@ jobs:
         echo "CLONE_DURATION=$dur" >> $env:GITHUB_ENV
         Write-Host "Clone took: $dur seconds"
 
-    - name: Setup BC compiler folder via BcContainerHelper (dotnet packages)
+    - name: Download dotnet packages (range download)
       if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
       shell: powershell
       run: |
         Import-Module BcContainerHelper -Force -DisableNameChecking
         $start = Get-Date
 
-        # Get artifact URL for BC 26 - dotnet packages are compatible across minor versions.
-        # Avoid pinning exact version: artifact index may not contain every build.
-        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
-        Write-Host "Artifact URL: $artifactUrl"
-        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
+        # Get latest BC 26 W1 artifact URL, then derive the platform artifact URL from it
+        $w1Url = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
+        if (-not $w1Url) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
+        $platformUrl = $w1Url -replace '/w1$', '/platform'
+        Write-Host "Platform artifact URL: $platformUrl"
 
-        # Use absolute path to avoid BcContainerHelper path-doubling bug on Linux with relative paths
-        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder (Join-Path $env:RUNNER_TEMP "bc-compiler-cache")
-        echo "BC_COMPILER_FOLDER=$compilerFolder" >> $env:GITHUB_ENV
-        Write-Host "Compiler folder: $compilerFolder"
+        # HEAD request to get file size (required by the range-download script)
+        $response = Invoke-WebRequest -Uri $platformUrl -Method Head -UseBasicParsing
+        $totalSize = [long]($response.Headers['Content-Length'] | Select-Object -First 1)
+        Write-Host "Platform artifact size: $([math]::Round($totalSize / 1MB)) MB"
 
-        # The dotnetpackages are inside the compiler folder
-        $dotnetPath = Join-Path $compilerFolder "dotnetpackages"
-        if (Test-Path $dotnetPath) {
-          Write-Host "dotnetpackages found at: $dotnetPath"
-          $count = (Get-ChildItem $dotnetPath -Recurse -File).Count
-          Write-Host "  Files: $count"
-        } else {
-          Write-Host "WARNING: dotnetpackages not found at $dotnetPath"
-          Write-Host "Compiler folder contents:"
-          Get-ChildItem $compilerFolder | Select-Object Name
-        }
-        echo "DOTNET_PATH=$dotnetPath" >> $env:GITHUB_ENV
+        $outDir = Join-Path $env:RUNNER_TEMP "dotnetpackages"
+        python3 scripts/download-dotnetpackages.py $platformUrl $totalSize $outDir
+        if ($LASTEXITCODE -ne 0) { throw "dotnet packages download failed (exit $LASTEXITCODE)" }
 
-        # Patch BCApps app.json with the dotnetpackages path
-        $appJson = "bcapps-temp\src\System Application\App\app.json"
-        $data = Get-Content $appJson | ConvertFrom-Json
-        $data | Add-Member -NotePropertyName assemblyProbingPaths -NotePropertyValue @($dotnetPath) -Force
-        $data | ConvertTo-Json -Depth 10 | Out-File $appJson -Encoding UTF8
-        Write-Host "Patched assemblyProbingPaths in app.json"
+        $count = (Get-ChildItem $outDir -File).Count
+        Write-Host "dotnetpackages extracted: $count files in $outDir"
+        echo "DOTNET_PATH=$outDir" >> $env:GITHUB_ENV
 
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
         echo "DOTNET_DL_DURATION=$dur" >> $env:GITHUB_ENV
-        Write-Host "Compiler folder setup took: $dur seconds"
+        Write-Host "Dotnet packages download took: $dur seconds"
 
     - name: Compile AL extension
       shell: powershell
@@ -469,19 +453,17 @@ jobs:
           Write-Host "Compiling: sample extension"
         }
 
-        # Use the AL compiler from the BcContainerHelper compiler folder if available,
-        # otherwise fall back to our NuGet-installed one
-        $compilerFolder = $env:BC_COMPILER_FOLDER
-        if ($compilerFolder -and (Test-Path "$compilerFolder\compiler\win32\AL.exe")) {
-          $alExe = "$compilerFolder\compiler\win32\AL.exe"
-          Write-Host "Using compiler from: $alExe"
-        } else {
-          $alExe = "AL"
-          Write-Host "Using NuGet AL compiler"
+        $alExe = "AL"
+        Write-Host "Using NuGet AL compiler"
+
+        $compileArgs = @("compile", "/project:$projectPath", "/packagecachepath:$symbolsPath")
+        if ($env:DOTNET_PATH) {
+          $compileArgs += "/assemblyProbingPaths:$env:DOTNET_PATH"
+          Write-Host "assemblyProbingPaths: $env:DOTNET_PATH"
         }
 
         $ErrorActionPreference = "Continue"
-        & $alExe compile /project:"$projectPath" /packagecachepath:"$symbolsPath"
+        & $alExe @compileArgs
         $alExit = $LASTEXITCODE
         $ErrorActionPreference = "Stop"
 
