@@ -290,18 +290,23 @@ def main():
                 print(f"  WARNING: Unsupported compression {entry['comp_method']} for {basename}, skipping")
                 continue
 
-            # bc-managed-dlls mode: skip native (non-managed) binaries only.
-            # Native Windows DLLs cause SIGABRT on Linux / heap corruption on Windows
-            # when the AL compiler (via Mono.Cecil) tries to reflect on them.
-            # We keep ALL managed DLLs including System.* — the compiler needs them
-            # for type forwarding resolution. Do NOT add .NET runtime paths alongside
-            # these, or duplicate System.* DLLs cause Mono.Cecil stack overflow.
-            if mode == 'bc-managed-dlls':
-                if not is_managed_assembly(file_data):
-                    skipped_native += 1
-                    continue
-
-            out_path = os.path.join(output_dir, basename)
+            # Determine output path based on mode
+            if mode in ('service-dlls', 'bc-managed-dlls'):
+                # Preserve directory structure relative to Service/ — matches BcContainerHelper behavior.
+                # BcContainerHelper copies DLLs with -Recurse preserving subdirs under Service/.
+                name_lower = entry['name'].lower()
+                service_idx = name_lower.find('/service/')
+                if service_idx >= 0:
+                    rel_path = entry['name'][service_idx + len('/service/'):]
+                else:
+                    rel_path = basename
+                out_path = os.path.join(output_dir, rel_path)
+                # Create subdirectory if needed
+                out_subdir = os.path.dirname(out_path)
+                if out_subdir and not os.path.exists(out_subdir):
+                    os.makedirs(out_subdir, exist_ok=True)
+            else:
+                out_path = os.path.join(output_dir, basename)
             with open(out_path, 'wb') as f:
                 f.write(file_data)
             extracted   += 1

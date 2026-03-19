@@ -190,95 +190,70 @@ jobs:
         $totalSize = [long]($head.Headers['Content-Length'] | Select-Object -First 1)
         Write-Host "Platform artifact size: $([math]::Round($totalSize / 1MB)) MB"
 
-        # 4. Download managed DLLs only via HTTP range request.
-        # The 'bc-managed-dlls' mode filters out native/C++ DLLs using PE CLR header check.
-        # Native Windows DLLs cause SIGABRT on Linux when the compiler tries to load them.
-        $dllOutput = Join-Path $env:RUNNER_TEMP "bc-service-dlls"
-        New-Item -ItemType Directory -Path $dllOutput -Force | Out-Null
+        # 4. Download service DLLs via HTTP range request, preserving directory structure.
+        # This replicates what BcContainerHelper's New-BcCompilerFolder does:
+        # Copy-Item -Path $serviceTierFolder -Filter '*.dll' -Destination $dllsPath -Recurse
+        $dllsBase = Join-Path $env:RUNNER_TEMP "dlls"
+        $servicePath = Join-Path $dllsBase "Service"
+        New-Item -ItemType Directory -Path $servicePath -Force | Out-Null
         $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts" "download-dotnetpackages.py"
-        Write-Host "Running range download (bc-managed-dlls mode): $scriptPath"
-        $result = & python3 $scriptPath $platformUrl $totalSize $dllOutput bc-managed-dlls 2>&1
+        Write-Host "Running range download (service-dlls mode, preserving tree): $scriptPath"
+        $result = & python3 $scriptPath $platformUrl $totalSize $servicePath service-dlls 2>&1
         $result | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) {
-          Write-Host "WARNING: Range download failed (exit $LASTEXITCODE) - DOTNET_PATH will not be set"
-          $dllOutput = $null
+          Write-Host "ERROR: Range download failed (exit $LASTEXITCODE)"
+          exit 1
         }
 
-        # 5. Download out-of-band .NET assemblies not in the shared runtime
-        $nugetBase = "https://api.nuget.org/v3-flatcontainer"
-        $extraDlls = @(
-          @{ Name = "System.Security.Cryptography.Xml";     Version = "8.0.1" },
-          @{ Name = "System.Security.Cryptography.Pkcs";    Version = "8.0.1" },
-          @{ Name = "System.Drawing.Common";                Version = "8.0.0" },
-          @{ Name = "System.DirectoryServices.Protocols";   Version = "8.0.1" },
-          @{ Name = "System.Runtime.Caching";               Version = "8.0.1" },
-          @{ Name = "System.IdentityModel.Tokens.Jwt";      Version = "8.0.2" },
-          @{ Name = "System.ServiceModel.Primitives";        Version = "8.0.0" }
-        )
-        foreach ($pkg in $extraDlls) {
-          $pkgLower = $pkg.Name.ToLower()
-          $url = "$nugetBase/$pkgLower/$($pkg.Version)/$pkgLower.$($pkg.Version).nupkg"
-          $tmpPkg = Join-Path $env:RUNNER_TEMP "$pkgLower.nupkg"
-          try {
-            Invoke-WebRequest -Uri $url -OutFile $tmpPkg -UseBasicParsing -ErrorAction Stop
-            $tmpZip = $tmpPkg -replace '\.nupkg$', '.zip'
-            Copy-Item $tmpPkg $tmpZip
-            $tmpExtract = Join-Path $env:RUNNER_TEMP "nuget-$pkgLower"
-            Expand-Archive -Path $tmpZip -DestinationPath $tmpExtract -Force -ErrorAction SilentlyContinue
-            $netDlls = Get-ChildItem $tmpExtract -Recurse -Filter "*.dll" |
-              Where-Object { $_.FullName -match 'lib[\\/]net[68]' } | Select-Object -First 1
-            if ($netDlls) {
-              $dllDir = Split-Path $netDlls.FullName
-              Copy-Item "$dllDir/*.dll" $dllOutput -Force -ErrorAction SilentlyContinue
-              Write-Host "  $($pkg.Name): copied from $dllDir"
-            }
-            Remove-Item $tmpPkg, $tmpZip -Force -ErrorAction SilentlyContinue
-            Remove-Item $tmpExtract -Recurse -Force -ErrorAction SilentlyContinue
-          } catch { Write-Host "  WARNING: Failed to download $($pkg.Name): $_" }
+        # 5. Remove subdirectories that BcContainerHelper removes
+        @('Management', 'WindowsServiceInstaller', 'SideServices') | ForEach-Object {
+          $sub = Join-Path $servicePath $_
+          if (Test-Path $sub) { Remove-Item $sub -Recurse -Force; Write-Host "  Removed: $_" }
         }
 
-        # 6. Copy ONLY specific missing facade DLLs from the .NET SDK ref pack.
-        # The platform artifact is missing a few core facades (netstandard, System.Core, etc.)
-        # We can't bulk-copy runtime DLLs — they cause Mono.Cecil stack overflow from circular
-        # type forwarding between platform and runtime versions of the same assemblies.
-        # Instead, copy only the exact missing facades from the SDK reference assembly pack.
-        $missingFacades = @('netstandard.dll', 'System.Core.dll', 'System.Drawing.dll',
-                            'System.Data.dll', 'System.Xml.dll', 'System.Xml.Linq.dll',
-                            'System.Net.Http.dll', 'System.IO.dll', 'System.Threading.dll',
-                            'System.Runtime.Serialization.dll', 'System.ComponentModel.Composition.dll',
-                            'mscorlib.dll')
+        # 6. Copy DocumentFormat.OpenXml.dll to OpenXML folder (same as BcContainerHelper)
+        $openXmlPath = Join-Path $dllsBase "OpenXML"
+        New-Item -ItemType Directory -Path $openXmlPath -Force | Out-Null
+        $openXmlDll = Get-ChildItem $servicePath -Filter "DocumentFormat.OpenXml.dll" -Recurse -EA SilentlyContinue | Select-Object -First 1
+        if ($openXmlDll) {
+          Copy-Item $openXmlDll.FullName $openXmlPath -Force
+          Write-Host "OpenXML: $($openXmlDll.Name)"
+        }
+
+        # 7. Download .NET shared runtime into dlls/shared/ (same as BcContainerHelper for v22+)
+        # BcContainerHelper downloads the .NET runtime when the local version is too low.
+        # On Linux, this is always needed since there's no Windows .NET Framework fallback.
+        $sharedPath = Join-Path $dllsBase "shared"
         try {
-          # Find .NET 8 SDK ref pack (installed by setup-dotnet)
-          $refPacks = Get-ChildItem "/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref" -Directory -EA SilentlyContinue |
-            Where-Object { $_.Name -match "^8\." } | Sort-Object Name | Select-Object -Last 1
-          if ($refPacks) {
-            $refPath = Join-Path $refPacks.FullName "ref" "net8.0"
-            Write-Host "SDK ref pack: $refPath"
-            $existing = @{}
-            Get-ChildItem $dllOutput -Filter "*.dll" -EA SilentlyContinue |
-              ForEach-Object { $existing[$_.Name.ToLower()] = $true }
-            $copied = 0
-            foreach ($facade in $missingFacades) {
-              $src = Join-Path $refPath $facade
-              if ((Test-Path $src) -and -not $existing[$facade.ToLower()]) {
-                Copy-Item $src $dllOutput -Force
-                $copied++
-                Write-Host "  Copied facade: $facade"
-              }
-            }
-            Write-Host "  Copied $copied facade DLLs from ref pack"
-          } else { Write-Host "WARNING: .NET 8 ref pack not found" }
-        } catch { Write-Host "WARNING: Could not copy facades: $_" }
-
-        # 7. Build probing paths — single folder with all DLLs
-        if ($dllOutput -and (Test-Path $dllOutput)) {
-          $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
-          if ($dllCount -gt 0) {
-            Write-Host "Total DLLs in probing path: $dllCount"
-            echo "DOTNET_PATH=$dllOutput" >> $env:GITHUB_ENV
-          } else {
-            Write-Host "WARNING: No DLLs found - compilation will fail"
+          $runtimes = & dotnet --list-runtimes 2>&1
+          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
+            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
+          if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
+            $runtimeSrc = Join-Path $Matches[2].Trim('[',']') $Matches[1]
+            Write-Host "Copying .NET runtime to shared/: $runtimeSrc"
+            Copy-Item $runtimeSrc $sharedPath -Recurse -Force
+            $sharedCount = (Get-ChildItem $sharedPath -Filter "*.dll" -EA SilentlyContinue).Count
+            Write-Host "  shared/ DLLs: $sharedCount"
           }
+        } catch { Write-Host "WARNING: Could not copy .NET runtime to shared/: $_" }
+
+        # 8. Build probing paths exactly like BcContainerHelper:
+        #    OpenXML, shared, Service — comma-separated, this order
+        $probingPaths = @()
+        if (Test-Path $openXmlPath) { $probingPaths += $openXmlPath }
+        if (Test-Path $sharedPath) { $probingPaths += $sharedPath }
+        if (Test-Path $servicePath) { $probingPaths += $servicePath }
+
+        $serviceCount = (Get-ChildItem $servicePath -Filter "*.dll" -Recurse -EA SilentlyContinue).Count
+        Write-Host "Service DLLs (with subdirs): $serviceCount"
+
+        if ($probingPaths.Count -gt 0) {
+          $combined = $probingPaths -join ','
+          Write-Host "assemblyProbingPaths ($($probingPaths.Count) paths): $combined"
+          echo "DOTNET_PATH=$combined" >> $env:GITHUB_ENV
+        } else {
+          Write-Host "ERROR: No probing paths found"
+          exit 1
         }
 
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
@@ -308,9 +283,9 @@ jobs:
         fi
         echo "Running: AL compile /project:\"$PROJECT_PATH\" /packagecachepath:\"$SYMBOLS_PATH\" $EXTRA_ARGS"
         echo "Probing paths: $DOTNET_PATH"
-        IFS=';' read -ra PATHS <<< "$DOTNET_PATH"
+        IFS=',' read -ra PATHS <<< "$DOTNET_PATH"
         for p in "${PATHS[@]}"; do
-          count=$(ls -1 "$p"/*.dll 2>/dev/null | wc -l)
+          count=$(find "$p" -name "*.dll" 2>/dev/null | wc -l)
           echo "  $p: $count DLLs"
         done
         # Capture full output including stderr to diagnose crashes (exit 134 = unhandled .NET exception)
@@ -528,91 +503,70 @@ jobs:
         $totalSize = [long]($head.Headers['Content-Length'] | Select-Object -First 1)
         Write-Host "Platform artifact size: $([math]::Round($totalSize / 1MB)) MB"
 
-        # 4. Download only the BC service DLLs via HTTP range request
+        # 4. Download service DLLs via HTTP range request, preserving directory structure.
+        # Replicates BcContainerHelper's New-BcCompilerFolder behavior.
         # Note: Join-Path with 3 args requires PS7+; use nested calls for PS5.1 compatibility
-        $dllOutput = Join-Path $env:RUNNER_TEMP "bc-service-dlls"
-        New-Item -ItemType Directory -Path $dllOutput -Force | Out-Null
+        $dllsBase = Join-Path $env:RUNNER_TEMP "dlls"
+        $servicePath = Join-Path $dllsBase "Service"
+        New-Item -ItemType Directory -Path $servicePath -Force | Out-Null
         $scriptPath = Join-Path (Join-Path $env:GITHUB_WORKSPACE "scripts") "download-dotnetpackages.py"
-        Write-Host "Running range download (bc-managed-dlls mode): $scriptPath"
-        $result = & python3 $scriptPath $platformUrl $totalSize $dllOutput bc-managed-dlls 2>&1
+        Write-Host "Running range download (service-dlls mode, preserving tree): $scriptPath"
+        $result = & python3 $scriptPath $platformUrl $totalSize $servicePath service-dlls 2>&1
         $result | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) {
-          Write-Host "WARNING: Range download failed (exit $LASTEXITCODE) - DOTNET_PATH will not be set"
-          $dllOutput = $null
+          Write-Host "ERROR: Range download failed (exit $LASTEXITCODE)"
+          exit 1
         }
 
-        # 5. Download out-of-band .NET assemblies not in the shared runtime
-        $nugetBase = "https://api.nuget.org/v3-flatcontainer"
-        $extraDlls = @(
-          @{ Name = "System.Security.Cryptography.Xml";     Version = "8.0.1" },
-          @{ Name = "System.Security.Cryptography.Pkcs";    Version = "8.0.1" },
-          @{ Name = "System.Drawing.Common";                Version = "8.0.0" },
-          @{ Name = "System.DirectoryServices";             Version = "8.0.1" },
-          @{ Name = "System.DirectoryServices.Protocols";   Version = "8.0.1" },
-          @{ Name = "System.Runtime.Caching";               Version = "8.0.1" }
-        )
-        foreach ($pkg in $extraDlls) {
-          $pkgLower = $pkg.Name.ToLower()
-          $url = "$nugetBase/$pkgLower/$($pkg.Version)/$pkgLower.$($pkg.Version).nupkg"
-          $tmpPkg = Join-Path $env:RUNNER_TEMP "$pkgLower.nupkg"
-          try {
-            Invoke-WebRequest -Uri $url -OutFile $tmpPkg -UseBasicParsing -ErrorAction Stop
-            $tmpZip = $tmpPkg -replace '\.nupkg$', '.zip'
-            Copy-Item $tmpPkg $tmpZip
-            $tmpExtract = Join-Path $env:RUNNER_TEMP "nuget-$pkgLower"
-            Expand-Archive -Path $tmpZip -DestinationPath $tmpExtract -Force -ErrorAction SilentlyContinue
-            $netDlls = Get-ChildItem $tmpExtract -Recurse -Filter "*.dll" |
-              Where-Object { $_.FullName -match 'lib[\\/]net[68]' } | Select-Object -First 1
-            if ($netDlls) {
-              $dllDir = Split-Path $netDlls.FullName
-              Copy-Item (Join-Path $dllDir "*.dll") $dllOutput -Force -ErrorAction SilentlyContinue
-              Write-Host "  $($pkg.Name): copied from $dllDir"
-            }
-            Remove-Item $tmpPkg, $tmpZip -Force -ErrorAction SilentlyContinue
-            Remove-Item $tmpExtract -Recurse -Force -ErrorAction SilentlyContinue
-          } catch { Write-Host "  WARNING: Failed to download $($pkg.Name): $_" }
+        # 5. Remove subdirectories that BcContainerHelper removes
+        @('Management', 'WindowsServiceInstaller', 'SideServices') | ForEach-Object {
+          $sub = Join-Path $servicePath $_
+          if (Test-Path $sub) { Remove-Item $sub -Recurse -Force; Write-Host "  Removed: $_" }
         }
 
-        # 6. Copy ONLY specific missing facade DLLs from the .NET SDK ref pack.
-        # Same as Linux: avoid bulk runtime copy that causes Mono.Cecil stack overflow.
-        $missingFacades = @('netstandard.dll', 'System.Core.dll', 'System.Drawing.dll',
-                            'System.Data.dll', 'System.Xml.dll', 'System.Xml.Linq.dll',
-                            'System.Net.Http.dll', 'System.IO.dll', 'System.Threading.dll',
-                            'System.Runtime.Serialization.dll', 'System.ComponentModel.Composition.dll',
-                            'mscorlib.dll')
+        # 6. Copy DocumentFormat.OpenXml.dll to OpenXML folder
+        $openXmlPath = Join-Path $dllsBase "OpenXML"
+        New-Item -ItemType Directory -Path $openXmlPath -Force | Out-Null
+        $openXmlDll = Get-ChildItem $servicePath -Filter "DocumentFormat.OpenXml.dll" -Recurse -EA SilentlyContinue | Select-Object -First 1
+        if ($openXmlDll) {
+          Copy-Item $openXmlDll.FullName $openXmlPath -Force
+          Write-Host "OpenXML: $($openXmlDll.Name)"
+        }
+
+        # 7. Build probing paths like BcContainerHelper for Windows + platform v22+:
+        #    OpenXML, .NET runtime paths, Service — comma-separated
+        $probingPaths = @()
+        if (Test-Path $openXmlPath) { $probingPaths += $openXmlPath }
+
+        # Add .NET runtime paths (Windows can use these safely)
         try {
-          $dotnetRoot = (Get-Command dotnet -EA SilentlyContinue).Source | Split-Path
-          $refPackBase = Join-Path $dotnetRoot "packs" "Microsoft.NETCore.App.Ref"
-          $refPacks = Get-ChildItem $refPackBase -Directory -EA SilentlyContinue |
-            Where-Object { $_.Name -match "^8\." } | Sort-Object Name | Select-Object -Last 1
-          if ($refPacks) {
-            $refPath = Join-Path $refPacks.FullName "ref" "net8.0"
-            Write-Host "SDK ref pack: $refPath"
-            $existing = @{}
-            Get-ChildItem $dllOutput -Filter "*.dll" -EA SilentlyContinue |
-              ForEach-Object { $existing[$_.Name.ToLower()] = $true }
-            $copied = 0
-            foreach ($facade in $missingFacades) {
-              $src = Join-Path $refPath $facade
-              if ((Test-Path $src) -and -not $existing[$facade.ToLower()]) {
-                Copy-Item $src $dllOutput -Force
-                $copied++
-                Write-Host "  Copied facade: $facade"
-              }
-            }
-            Write-Host "  Copied $copied facade DLLs from ref pack"
-          } else { Write-Host "WARNING: .NET 8 ref pack not found at $refPackBase" }
-        } catch { Write-Host "WARNING: Could not copy facades: $_" }
-
-        # 7. Build probing path — single folder with all DLLs
-        if ($dllOutput -and (Test-Path $dllOutput)) {
-          $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
-          if ($dllCount -gt 0) {
-            Write-Host "Total DLLs in probing path: $dllCount"
-            echo "DOTNET_PATH=$dllOutput" >> $env:GITHUB_ENV
-          } else {
-            Write-Host "WARNING: No DLLs found - compilation will fail"
+          $runtimes = & dotnet --list-runtimes 2>&1
+          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
+            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
+          if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
+            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
+            if (Test-Path $p) { $probingPaths += $p; Write-Host "NETCore.App: $p" }
           }
+          $aspRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.AspNetCore\.App ([0-9]+)\." } |
+            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
+          if ($aspRuntime -match "Microsoft\.AspNetCore\.App ([0-9.]+) \[(.+)\]") {
+            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
+            if (Test-Path $p) { $probingPaths += $p; Write-Host "AspNetCore.App: $p" }
+          }
+        } catch { Write-Host "Could not enumerate .NET runtimes: $_" }
+
+        if (Test-Path $servicePath) { $probingPaths += $servicePath }
+
+        $serviceCount = (Get-ChildItem $servicePath -Filter "*.dll" -Recurse -EA SilentlyContinue).Count
+        Write-Host "Service DLLs (with subdirs): $serviceCount"
+
+        if ($probingPaths.Count -gt 0) {
+          $combined = $probingPaths -join ','
+          Write-Host "assemblyProbingPaths ($($probingPaths.Count) paths): $combined"
+          echo "DOTNET_PATH=$combined" >> $env:GITHUB_ENV
+        } else {
+          Write-Host "ERROR: No probing paths found"
+          exit 1
         }
 
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
