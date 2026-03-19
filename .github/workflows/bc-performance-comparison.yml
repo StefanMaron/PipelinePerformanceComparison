@@ -741,14 +741,25 @@ jobs:
     - name: Download test toolkit apps from BC artifact
       run: |
         STEP_START=$(date +%s.%N)
-        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/platform"
+
+        # Resolve latest artifact version from the CDN (NuGet symbol versions differ from artifact CDN versions)
+        MAJOR_MINOR="26.3"
+        echo "Resolving latest $MAJOR_MINOR artifact version from CDN..."
+        LATEST_VERSION=$(curl -s "${{ env.BC_ARTIFACT_BASE }}?comp=list&restype=container&prefix=${MAJOR_MINOR}.&delimiter=/" 2>/dev/null \
+          | grep -oP '(?<=<Name>)[^<]+(?=/</Name>)' | sort -V | tail -1)
+        if [ -z "$LATEST_VERSION" ]; then
+          echo "ERROR: Could not resolve latest artifact version for $MAJOR_MINOR"
+          exit 1
+        fi
+        echo "Latest artifact version: $LATEST_VERSION"
+
+        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/$LATEST_VERSION/platform"
         echo "Platform artifact URL: $PLATFORM_URL"
 
         # Get artifact size via HEAD request
         SIZE=$(curl -sI "$PLATFORM_URL" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\r')
         if [ -z "$SIZE" ] || [ "$SIZE" = "0" ]; then
           echo "ERROR: Could not determine platform artifact size"
-          echo "Trying HEAD request debug:"
           curl -sI "$PLATFORM_URL" 2>&1 | head -10
           exit 1
         fi
@@ -1161,22 +1172,51 @@ jobs:
         $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
         Write-Host "Artifact URL: $artifactUrl"
 
-        # Download and extract platform artifact to get test toolkit .app files
-        $folders = Download-Artifacts -artifactUrl $artifactUrl -includePlatform
-        $platformFolder = $folders[1]  # Second element is platform path
+        # Download artifact to local cache (BcContainerHelper caches in C:\bcartifacts.cache)
+        $paths = Download-Artifacts -artifactUrl $artifactUrl -includePlatform
+        Write-Host "Downloaded paths: $($paths -join ', ')"
+
+        # Find the platform folder (contains 'platform' in the path)
+        $platformFolder = $null
+        foreach ($p in $paths) {
+          if ($p -and (Test-Path $p) -and ($p -like '*platform*' -or (Test-Path (Join-Path $p "Applications")))) {
+            $platformFolder = $p
+            break
+          }
+        }
+        # Fallback: check bcartifacts.cache directly
+        if (-not $platformFolder) {
+          $cacheBase = "C:\bcartifacts.cache\sandbox"
+          if (Test-Path $cacheBase) {
+            $platformFolder = Get-ChildItem $cacheBase -Directory -Recurse |
+              Where-Object { $_.Name -eq "platform" -or (Test-Path (Join-Path $_.FullName "Applications")) } |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+        }
+        if (-not $platformFolder -or -not (Test-Path $platformFolder)) {
+          Write-Host "WARNING: Could not locate platform folder, listing downloaded paths:"
+          foreach ($p in $paths) { if ($p) { Write-Host "  $p"; if (Test-Path $p) { Get-ChildItem $p | ForEach-Object { Write-Host "    $($_.Name)" } } } }
+          Write-Host "Continuing without test toolkit apps for compilation symbols"
+          $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
+          echo "TOOLKIT_DOWNLOAD_DURATION=$dur" >> $env:GITHUB_ENV
+          exit 0
+        }
         Write-Host "Platform folder: $platformFolder"
 
         # Collect test toolkit .app files
         New-Item -ItemType Directory -Path test-toolkit-apps -Force | Out-Null
-        $testFrameworkPath = Join-Path $platformFolder "Applications" "testframework"
+        $appDir = Join-Path $platformFolder "Applications"
+        if (-not (Test-Path $appDir)) { $appDir = $platformFolder }
+
+        $testFrameworkPath = Join-Path $appDir "testframework"
         if (Test-Path $testFrameworkPath) {
           Get-ChildItem -Path $testFrameworkPath -Filter "*.app" -Recurse | ForEach-Object {
             Copy-Item $_.FullName "test-toolkit-apps\" -Force
             Write-Host "  Found: $($_.Name)"
           }
         }
-        # System Application Test Library and Tests-TestLibraries
-        Get-ChildItem -Path (Join-Path $platformFolder "Applications") -Directory | ForEach-Object {
+        # System Application Test Library, Tests-TestLibraries, etc.
+        Get-ChildItem -Path $appDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
           $testDir = Join-Path $_.FullName "Test"
           if (Test-Path $testDir) {
             Get-ChildItem -Path $testDir -Filter "*.app" | ForEach-Object {
@@ -1186,8 +1226,11 @@ jobs:
           }
         }
 
+        $count = (Get-ChildItem test-toolkit-apps -Filter "*.app" -ErrorAction SilentlyContinue).Count
+        Write-Host "Total test toolkit apps: $count"
+
         # Copy to .alpackages for compilation symbol resolution
-        Get-ChildItem test-toolkit-apps -Filter "*.app" | ForEach-Object {
+        Get-ChildItem test-toolkit-apps -Filter "*.app" -ErrorAction SilentlyContinue | ForEach-Object {
           Copy-Item $_.FullName ".alpackages\" -Force
         }
 
