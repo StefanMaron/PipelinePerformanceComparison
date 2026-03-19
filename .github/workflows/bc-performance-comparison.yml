@@ -760,6 +760,17 @@ jobs:
         STEP_START=$(date +%s.%N)
         git clone --branch ${{ env.BCDEV_BRANCH }} --depth 1 ${{ env.BCDEV_REPO }} bcdev-temp
         cd bcdev-temp
+
+        # Fix: compose.yml mounts ./secret.key but only config/secret.key exists
+        cp config/secret.key secret.key
+
+        # Override .env to use w1 (matching our symbols) instead of hardcoded de
+        cat > .env <<'ENVEOF'
+        SA_PASSWORD=P@ssw0rd123!
+        BC_ARTIFACT_URL=
+        ENVEOF
+        sed -i 's/^        //' .env
+
         docker compose build
         STEP_END=$(date +%s.%N)
         CONTAINER_BUILD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
