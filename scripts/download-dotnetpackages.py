@@ -249,8 +249,9 @@ def main():
         print()
 
         # Step 6: Extract all matching files from the range buffer (flat into output_dir)
-        extracted   = 0
-        total_bytes = 0
+        extracted      = 0
+        total_bytes    = 0
+        skipped_native = 0
         for entry in matching:
             name     = entry['name']
             basename = os.path.basename(name)
@@ -288,12 +289,12 @@ def main():
                 print(f"  WARNING: Unsupported compression {entry['comp_method']} for {basename}, skipping")
                 continue
 
-            # bc-managed-dlls mode: skip .NET runtime DLLs and native (non-managed) binaries
+            # bc-managed-dlls mode: skip native (non-managed) binaries only.
+            # Native Windows DLLs cause SIGABRT on Linux and heap corruption on Windows
+            # when the AL compiler (via Mono.Cecil) tries to reflect on them.
             if mode == 'bc-managed-dlls':
-                basename_lower = basename.lower()
-                if any(basename_lower.startswith(p) for p in _RUNTIME_DLL_PREFIXES):
-                    continue
                 if not is_managed_assembly(file_data):
+                    skipped_native += 1
                     continue
 
             out_path = os.path.join(output_dir, basename)
@@ -306,6 +307,8 @@ def main():
 
         print()
         print(f"Extracted : {extracted} files  ({total_bytes // 1024} KB)")
+        if skipped_native > 0:
+            print(f"Skipped   : {skipped_native} native (non-managed) DLLs")
 
         if extracted == 0:
             print("ERROR: No files were extracted")
