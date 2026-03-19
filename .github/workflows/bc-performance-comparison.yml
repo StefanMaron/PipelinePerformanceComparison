@@ -261,8 +261,12 @@ jobs:
         if [ -n "$DOTNET_PATH" ]; then
           EXTRA_ARGS="/assemblyProbingPaths:$DOTNET_PATH"
         fi
-        AL compile /project:"$PROJECT_PATH" /packagecachepath:"$SYMBOLS_PATH" $EXTRA_ARGS
+        echo "Running: AL compile /project:\"$PROJECT_PATH\" /packagecachepath:\"$SYMBOLS_PATH\" $EXTRA_ARGS"
+        # Capture full output including stderr to diagnose crashes (exit 134 = unhandled .NET exception)
+        set +e
+        AL compile /project:"$PROJECT_PATH" /packagecachepath:"$SYMBOLS_PATH" $EXTRA_ARGS 2>&1
         AL_EXIT=$?
+        set -e
 
         STEP_END=$(date +%s.%N)
         COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")

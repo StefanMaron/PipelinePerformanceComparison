@@ -243,11 +243,6 @@ def main():
                 print(f"  WARNING: Unsupported compression {entry['comp_method']} for {basename}, skipping")
                 continue
 
-            # For service-dlls: skip native Windows DLLs — they crash the Linux AL compiler.
-            # Only managed .NET assemblies (containing the 'BSJB' CLR metadata signature) are safe.
-            if mode == 'service-dlls' and not is_managed_assembly(file_data):
-                continue
-
             out_path = os.path.join(output_dir, basename)
             with open(out_path, 'wb') as f:
                 f.write(file_data)
