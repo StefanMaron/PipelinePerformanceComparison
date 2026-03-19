@@ -168,33 +168,43 @@ jobs:
         echo "CLONE_DURATION=$CLONE_DURATION" >> $GITHUB_ENV
         echo "Clone took: $CLONE_DURATION seconds"
 
-    - name: Download BC dotnet packages (partial ZIP)
+    - name: Setup BC compiler folder (dotnet packages)
       if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
+      shell: pwsh
       run: |
-        STEP_START=$(date +%s.%N)
+        $start = Get-Date
+        Install-Module -Name BcContainerHelper -Force -AllowClobber -Scope CurrentUser | Out-Null
+        Import-Module BcContainerHelper -Force -DisableNameChecking
 
-        python3 scripts/download-dotnetpackages.py bc-dotnetpackages
+        # Use latest BC 26 — dotnet packages are compatible across minor versions
+        # Avoid pinning exact version: artifact index may not contain every build
+        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
+        Write-Host "Artifact URL: $artifactUrl"
+        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty — no BC 26 sandbox artifact found" }
 
-        # Patch BCApps app.json with absolute path to downloaded dotnet packages
-        DOTNET_PATH="$(pwd)/bc-dotnetpackages"
-        python3 - "$DOTNET_PATH" <<'PYEOF'
-        import json, sys
-        path = sys.argv[1]
-        app_json = 'bcapps-temp/src/System Application/App/app.json'
-        with open(app_json) as f:
-            data = json.load(f)
-        data['assemblyProbingPaths'] = [path]
-        with open(app_json, 'w') as f:
-            json.dump(data, f, indent=2)
-        print(f'Set assemblyProbingPaths to: {path}')
-        PYEOF
+        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder "bc-compiler-cache"
+        Write-Host "Compiler folder: $compilerFolder"
 
-        STEP_END=$(date +%s.%N)
-        DOTNET_DL_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "DOTNET_DL_DURATION=$DOTNET_DL_DURATION" >> $GITHUB_ENV
-        echo "Dotnet packages download took: $DOTNET_DL_DURATION seconds"
-      env:
-        BC_VERSION: ${{ env.BC_VERSION }}
+        $dotnetPath = Join-Path $compilerFolder "dotnetpackages"
+        if (Test-Path $dotnetPath) {
+          $count = (Get-ChildItem $dotnetPath -Recurse -File).Count
+          Write-Host "dotnetpackages: $dotnetPath ($count files)"
+        } else {
+          Write-Host "WARNING: dotnetpackages not at $dotnetPath"
+          Get-ChildItem $compilerFolder | Select-Object Name | Write-Host
+        }
+
+        # Patch BCApps app.json with the dotnet packages path
+        $appJson = "bcapps-temp/src/System Application/App/app.json"
+        $data = Get-Content $appJson | ConvertFrom-Json
+        $data | Add-Member -NotePropertyName assemblyProbingPaths `
+          -NotePropertyValue @($dotnetPath) -Force
+        $data | ConvertTo-Json -Depth 10 | Out-File $appJson -Encoding UTF8
+        Write-Host "Patched assemblyProbingPaths -> $dotnetPath"
+
+        $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
+        echo "DOTNET_DL_DURATION=$dur" >> $env:GITHUB_ENV
+        Write-Host "Compiler folder setup took: $dur seconds"
 
     - name: Compile AL extension
       run: |
@@ -407,11 +417,11 @@ jobs:
         Import-Module BcContainerHelper -Force -DisableNameChecking
         $start = Get-Date
 
-        # Get artifact URL for BC version and create a compiler folder.
-        # New-BcCompilerFolder downloads the AL compiler + dotnetpackages from the
-        # BC artifacts CDN (no container needed) and returns the folder path.
-        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "${{ env.BC_VERSION }}" -country w1
+        # Get artifact URL for BC 26 — dotnet packages are compatible across minor versions.
+        # Avoid pinning exact version: artifact index may not contain every build.
+        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
         Write-Host "Artifact URL: $artifactUrl"
+        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty — no BC 26 sandbox artifact found" }
 
         $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder "bc-compiler-cache"
         echo "BC_COMPILER_FOLDER=$compilerFolder" >> $env:GITHUB_ENV
