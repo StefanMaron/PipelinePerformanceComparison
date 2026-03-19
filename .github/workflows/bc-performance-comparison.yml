@@ -185,14 +185,26 @@ jobs:
         Write-Host "Compiler folder: $compilerFolder"
 
         $dotnetPath = Join-Path $compilerFolder "dotnetpackages"
+        if (-not (Test-Path $dotnetPath)) {
+          # On Linux, BcContainerHelper downloads dotnet.zip but doesn't extract it.
+          # Extract it manually to the expected dotnetpackages/ location.
+          $dotnetZip = Join-Path $compilerFolder "dotnet.zip"
+          if (Test-Path $dotnetZip) {
+            Write-Host "Extracting dotnet.zip -> $dotnetPath"
+            Expand-Archive -Path $dotnetZip -DestinationPath $dotnetPath -Force
+          } else {
+            Write-Host "WARNING: neither dotnetpackages/ nor dotnet.zip found"
+            Get-ChildItem $compilerFolder | Select-Object Name
+          }
+        }
+
         if (Test-Path $dotnetPath) {
           $count = (Get-ChildItem $dotnetPath -File).Count
           Write-Host "dotnetpackages: $dotnetPath ($count files)"
+          echo "DOTNET_PATH=$dotnetPath" >> $env:GITHUB_ENV
         } else {
-          Write-Host "WARNING: dotnetpackages not found at $dotnetPath"
-          Get-ChildItem $compilerFolder | Select-Object Name
+          Write-Host "WARNING: dotnetpackages not available - compilation may fail with AL0185"
         }
-        echo "DOTNET_PATH=$dotnetPath" >> $env:GITHUB_ENV
 
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
         echo "DOTNET_DL_DURATION=$dur" >> $env:GITHUB_ENV
