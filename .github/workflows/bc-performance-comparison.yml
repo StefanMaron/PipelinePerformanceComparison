@@ -185,23 +185,35 @@ jobs:
         Write-Host "Compiler folder: $compilerFolder"
 
         $dotnetPath = Join-Path $compilerFolder "dotnetpackages"
+
         if (-not (Test-Path $dotnetPath)) {
-          # On Linux, BcContainerHelper downloads dotnet.zip but doesn't extract it.
-          # Extract it manually to the expected dotnetpackages/ location.
-          $dotnetZip = Join-Path $compilerFolder "dotnet.zip"
-          if (Test-Path $dotnetZip) {
-            Write-Host "Extracting dotnet.zip -> $dotnetPath"
-            Expand-Archive -Path $dotnetZip -DestinationPath $dotnetPath -Force
+          # On Linux, BcContainerHelper doesn't extract dotnetpackages (they're inside the MSI).
+          # Check if the AL NuGet tools package includes dotnetpackages.
+          $alToolsStore = Join-Path $HOME ".dotnet/tools/.store"
+          $nugetDotnetPath = Get-ChildItem $alToolsStore -Recurse -Directory -Filter "dotnetpackages" -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ($nugetDotnetPath) {
+            Write-Host "Found dotnetpackages in NuGet tools: $nugetDotnetPath"
+            $dotnetPath = $nugetDotnetPath
           } else {
-            Write-Host "WARNING: neither dotnetpackages/ nor dotnet.zip found"
-            Get-ChildItem $compilerFolder | Select-Object Name
+            Write-Host "dotnetpackages not found in NuGet tools store"
+            # Diagnostic: show compiler folder and AL tools store contents
+            Write-Host "Compiler folder contents:"
+            Get-ChildItem $compilerFolder -Recurse | Select-Object FullName | head -30
+            Write-Host "AL tools store sample:"
+            Get-ChildItem $alToolsStore -Recurse -Filter "*.dotnetpackage" -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object { Write-Host $_.FullName }
           }
         }
 
         if (Test-Path $dotnetPath) {
-          $count = (Get-ChildItem $dotnetPath -File).Count
-          Write-Host "dotnetpackages: $dotnetPath ($count files)"
-          echo "DOTNET_PATH=$dotnetPath" >> $env:GITHUB_ENV
+          $count = (Get-ChildItem $dotnetPath -File -Filter "*.dotnetpackage" -ErrorAction SilentlyContinue).Count
+          $countAll = (Get-ChildItem $dotnetPath -File -ErrorAction SilentlyContinue).Count
+          Write-Host "dotnetpackages: $dotnetPath ($count .dotnetpackage files, $countAll total)"
+          if ($count -gt 0) {
+            echo "DOTNET_PATH=$dotnetPath" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "WARNING: directory exists but contains no .dotnetpackage files - skipping assemblyProbingPaths"
+          }
         } else {
           Write-Host "WARNING: dotnetpackages not available - compilation may fail with AL0185"
         }
