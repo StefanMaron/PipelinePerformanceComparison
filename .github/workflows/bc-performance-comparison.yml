@@ -237,17 +237,39 @@ jobs:
           } catch { Write-Host "  WARNING: Failed to download $($pkg.Name): $_" }
         }
 
-        # 6. Build probing paths — only BC managed DLLs + NuGet packages, NO .NET runtime paths.
-        # The BC platform artifact contains its own System.* managed DLLs with type forwarding
-        # chains. Adding .NET runtime paths creates duplicate System.* assemblies that cause
-        # Mono.Cecil stack overflow during circular type forwarding resolution.
+        # 6. Fill gaps from .NET 8 runtime — copy DLLs that are NOT already in the output folder.
+        # The BC platform artifact doesn't include core runtime DLLs (netstandard, System.Core, etc.)
+        # but we can't add the runtime as a separate probing path (duplicate System.* DLLs cause
+        # Mono.Cecil stack overflow from circular type forwarding). Instead, merge into one folder.
+        try {
+          $runtimes = & dotnet --list-runtimes 2>&1
+          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
+            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
+          if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
+            $runtimePath = Join-Path $Matches[2].Trim('[',']') $Matches[1]
+            Write-Host "Filling gaps from .NET runtime: $runtimePath"
+            $existing = @{}
+            Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue |
+              ForEach-Object { $existing[$_.Name.ToLower()] = $true }
+            $copied = 0
+            Get-ChildItem $runtimePath -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+              if (-not $existing[$_.Name.ToLower()]) {
+                Copy-Item $_.FullName $dllOutput -Force
+                $copied++
+              }
+            }
+            Write-Host "  Copied $copied runtime DLLs not already in platform set"
+          }
+        } catch { Write-Host "WARNING: Could not fill runtime gaps: $_" }
+
+        # 7. Build probing paths — single folder with all DLLs merged
         if ($dllOutput -and (Test-Path $dllOutput)) {
           $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
           if ($dllCount -gt 0) {
-            Write-Host "BC managed DLLs + NuGet packages: $dllCount files"
+            Write-Host "Total DLLs in probing path: $dllCount"
             echo "DOTNET_PATH=$dllOutput" >> $env:GITHUB_ENV
           } else {
-            Write-Host "WARNING: No managed DLLs found - compilation may fail"
+            Write-Host "WARNING: No DLLs found - compilation will fail"
           }
         }
 
@@ -543,40 +565,39 @@ jobs:
           } catch { Write-Host "  WARNING: Failed to download $($pkg.Name): $_" }
         }
 
-        # 6. Find .NET runtime paths for standard assemblies (netstandard, System.Core, etc.)
-        # Exclude .NET 9/10 - same fix as BcContainerHelper v6.1.11 (they crash the AL compiler)
-        $runtimePaths = @()
+        # 6. Fill gaps from .NET 8 runtime — copy DLLs NOT already in the output folder.
+        # Same approach as Linux: merge into one folder to avoid duplicate assemblies.
         try {
           $runtimes = & dotnet --list-runtimes 2>&1
           Write-Host "Installed runtimes: $($runtimes -join ', ')"
           $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
             Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
           if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
-            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
-            if (Test-Path $p) { $runtimePaths += $p; Write-Host "NETCore.App: $p" }
+            $runtimePath = Join-Path $Matches[2].Trim('[',']') $Matches[1]
+            Write-Host "Filling gaps from .NET runtime: $runtimePath"
+            $existing = @{}
+            Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue |
+              ForEach-Object { $existing[$_.Name.ToLower()] = $true }
+            $copied = 0
+            Get-ChildItem $runtimePath -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+              if (-not $existing[$_.Name.ToLower()]) {
+                Copy-Item $_.FullName $dllOutput -Force
+                $copied++
+              }
+            }
+            Write-Host "  Copied $copied runtime DLLs not already in platform set"
           }
-          $aspRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.AspNetCore\.App ([0-9]+)\." } |
-            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
-          if ($aspRuntime -match "Microsoft\.AspNetCore\.App ([0-9.]+) \[(.+)\]") {
-            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
-            if (Test-Path $p) { $runtimePaths += $p; Write-Host "AspNetCore.App: $p" }
-          }
-        } catch { Write-Host "Could not enumerate .NET runtimes: $_" }
+        } catch { Write-Host "WARNING: Could not fill runtime gaps: $_" }
 
-        # 7. Build combined probing paths
-        $allPaths = @()
+        # 7. Build probing path — single folder with all DLLs merged
         if ($dllOutput -and (Test-Path $dllOutput)) {
           $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
-          if ($dllCount -gt 0) { $allPaths += $dllOutput; Write-Host "BC service DLLs: $dllCount files" }
-        }
-        $allPaths += $runtimePaths
-
-        if ($allPaths.Count -gt 0) {
-          $combined = $allPaths -join ";"
-          Write-Host "assemblyProbingPaths ($($allPaths.Count) paths): $combined"
-          echo "DOTNET_PATH=$combined" >> $env:GITHUB_ENV
-        } else {
-          Write-Host "WARNING: No DLL probing paths found - compilation may fail with AL0451"
+          if ($dllCount -gt 0) {
+            Write-Host "Total DLLs in probing path: $dllCount"
+            echo "DOTNET_PATH=$dllOutput" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "WARNING: No DLLs found - compilation will fail"
+          }
         }
 
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
