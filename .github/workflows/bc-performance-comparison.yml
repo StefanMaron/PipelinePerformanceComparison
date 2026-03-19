@@ -486,12 +486,33 @@ jobs:
           $dllOutput = $null
         }
 
-        # 5. Build probing paths (BC service DLLs only - Windows has .NET runtime in GAC)
+        # 5. Find .NET runtime paths for standard assemblies (netstandard, System.Core, etc.)
+        # Exclude .NET 9/10 - same fix as BcContainerHelper v6.1.11 (they crash the AL compiler)
+        $runtimePaths = @()
+        try {
+          $runtimes = & dotnet --list-runtimes 2>&1
+          Write-Host "Installed runtimes: $($runtimes -join ', ')"
+          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
+            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
+          if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
+            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
+            if (Test-Path $p) { $runtimePaths += $p; Write-Host "NETCore.App: $p" }
+          }
+          $aspRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.AspNetCore\.App ([0-9]+)\." } |
+            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
+          if ($aspRuntime -match "Microsoft\.AspNetCore\.App ([0-9.]+) \[(.+)\]") {
+            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
+            if (Test-Path $p) { $runtimePaths += $p; Write-Host "AspNetCore.App: $p" }
+          }
+        } catch { Write-Host "Could not enumerate .NET runtimes: $_" }
+
+        # 6. Build combined probing paths
         $allPaths = @()
         if ($dllOutput -and (Test-Path $dllOutput)) {
           $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
           if ($dllCount -gt 0) { $allPaths += $dllOutput; Write-Host "BC service DLLs: $dllCount files" }
         }
+        $allPaths += $runtimePaths
 
         if ($allPaths.Count -gt 0) {
           $combined = $allPaths -join ";"

@@ -73,6 +73,17 @@ def parse_central_directory(data, cd_start, entry_count):
     return entries
 
 
+def is_managed_assembly(data):
+    """Return True if the bytes represent a managed .NET assembly.
+
+    All .NET managed assemblies contain the 4-byte CLI metadata signature 'BSJB'
+    near the start of the file. Native DLLs (C++, mixed-mode native) do not.
+    Filtering to managed-only prevents the AL compiler from crashing on Linux
+    when it tries to reflect on a native Windows DLL.
+    """
+    return b'BSJB' in data[:131072]  # metadata is always within the first 128 KB
+
+
 def find_matching_entries(entries, mode):
     """Return list of non-empty file entries matching the given mode."""
     if mode == 'service-dlls':
@@ -230,6 +241,11 @@ def main():
                     continue
             else:
                 print(f"  WARNING: Unsupported compression {entry['comp_method']} for {basename}, skipping")
+                continue
+
+            # For service-dlls: skip native Windows DLLs — they crash the Linux AL compiler.
+            # Only managed .NET assemblies (containing the 'BSJB' CLR metadata signature) are safe.
+            if mode == 'service-dlls' and not is_managed_assembly(file_data):
                 continue
 
             out_path = os.path.join(output_dir, basename)
