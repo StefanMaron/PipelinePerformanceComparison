@@ -621,7 +621,7 @@ jobs:
         Write-Host "Compiled app files:"
         Get-ChildItem $projectPath -Filter "*.app" -EA SilentlyContinue | ForEach-Object {
           Write-Host "  $($_.Name) ($([math]::Round($_.Length / 1KB, 1)) KB)"
-          Copy-Item $_.FullName "." -Force
+          if ($projectPath -ne ".") { Copy-Item $_.FullName "." -Force }
         }
 
     - name: Record metrics
@@ -807,6 +807,38 @@ jobs:
         STEP_END=$(date +%s.%N)
         CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
         echo "CONTAINER_DURATION=$CONTAINER_DURATION" >> $GITHUB_ENV
+        cd ..
+
+    - name: Fix BC auth config (NavUserPassword)
+      run: |
+        cd bcdev-temp
+        BC_CONTAINER=$(docker compose ps -q bc)
+        CONFIG_PATH="/root/.local/share/wineprefixes/bc1/drive_c/Program Files/Microsoft Dynamics NAV/260/Service/CustomSettings.config"
+
+        echo "Checking current auth config..."
+        CURRENT=$(docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$CONFIG_PATH" 2>&1)
+        echo "  $CURRENT"
+
+        if echo "$CURRENT" | grep -q '"Windows"'; then
+          echo "Fixing: Windows -> NavUserPassword"
+          docker exec "$BC_CONTAINER" sed -i 's/value="Windows"/value="NavUserPassword"/' "$CONFIG_PATH"
+          echo "Restarting BC server to apply config change..."
+          # Kill the BC server process, Wine will exit, container restarts via unless-stopped
+          docker exec "$BC_CONTAINER" pkill -f "Microsoft.Dynamics.Nav.Server" || true
+          sleep 5
+          # Wait for container to restart and become healthy again
+          CONTAINER_ID=$(docker compose ps -q bc)
+          for i in $(seq 1 60); do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_ID" 2>/dev/null || echo "unknown")
+            [ "$STATUS" = "healthy" ] && { echo "Container healthy again after ${i}x15s"; break; }
+            echo "  Waiting for restart... ($STATUS)"
+            sleep 15
+          done
+          echo "Verifying fix:"
+          docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$CONFIG_PATH"
+        else
+          echo "Auth config already correct (not Windows)"
+        fi
         cd ..
 
     - name: Publish app to BC container
