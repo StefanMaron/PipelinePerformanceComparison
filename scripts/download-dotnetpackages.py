@@ -130,16 +130,27 @@ def main():
 
         tops = sorted({e['name'].split('/')[0] for e in entries if '/' in e['name']})
         print(f"Top-level folders: {tops[:20]}")
+
+        # Print unique second-level paths to help locate dotnet-related files
+        second_level = sorted({'/'.join(e['name'].split('/')[:2]) for e in entries if '/' in e['name']})
+        print(f"Second-level paths (sample): {second_level[:30]}")
+
+        # Print any entries that look like dotnet type definitions
+        dotnet_hints = [e['name'] for e in entries if
+                        '.dotnetpackage' in e['name'].lower() or
+                        'dotnetpackage' in e['name'].lower() or
+                        ('dotnet' in e['name'].lower() and e['name'].endswith('/') is False)]
+        print(f"Dotnet-related entries (first 10): {dotnet_hints[:10]}")
         print()
 
         # Step 3: Find dotnetpackages/ entries — search anywhere in the path
         # (artifact structure varies across BC versions; the folder may be nested)
-        matching = [e for e in entries if 'dotnetpackages/' in e['name'] and e['comp_size'] > 0]
+        matching = [e for e in entries if 'dotnetpackages/' in e['name'].lower() and e['comp_size'] > 0]
         print(f"Entries containing 'dotnetpackages/': {len(matching)} files")
 
         if not matching:
             print(f"ERROR: No dotnetpackages entries found anywhere in the archive.")
-            print("Top-level folders above should help identify the correct location.")
+            print("See second-level paths and dotnet-related entries above to identify the correct location.")
             sys.exit(1)
 
         # Determine the archive prefix (everything up to and including 'dotnetpackages/')
