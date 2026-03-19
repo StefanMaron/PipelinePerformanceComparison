@@ -237,32 +237,40 @@ jobs:
           } catch { Write-Host "  WARNING: Failed to download $($pkg.Name): $_" }
         }
 
-        # 6. Fill gaps from .NET 8 runtime — copy DLLs that are NOT already in the output folder.
-        # The BC platform artifact doesn't include core runtime DLLs (netstandard, System.Core, etc.)
-        # but we can't add the runtime as a separate probing path (duplicate System.* DLLs cause
-        # Mono.Cecil stack overflow from circular type forwarding). Instead, merge into one folder.
+        # 6. Copy ONLY specific missing facade DLLs from the .NET SDK ref pack.
+        # The platform artifact is missing a few core facades (netstandard, System.Core, etc.)
+        # We can't bulk-copy runtime DLLs — they cause Mono.Cecil stack overflow from circular
+        # type forwarding between platform and runtime versions of the same assemblies.
+        # Instead, copy only the exact missing facades from the SDK reference assembly pack.
+        $missingFacades = @('netstandard.dll', 'System.Core.dll', 'System.Drawing.dll',
+                            'System.Data.dll', 'System.Xml.dll', 'System.Xml.Linq.dll',
+                            'System.Net.Http.dll', 'System.IO.dll', 'System.Threading.dll',
+                            'System.Runtime.Serialization.dll', 'System.ComponentModel.Composition.dll',
+                            'mscorlib.dll')
         try {
-          $runtimes = & dotnet --list-runtimes 2>&1
-          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
-            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
-          if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
-            $runtimePath = Join-Path $Matches[2].Trim('[',']') $Matches[1]
-            Write-Host "Filling gaps from .NET runtime: $runtimePath"
+          # Find .NET 8 SDK ref pack (installed by setup-dotnet)
+          $refPacks = Get-ChildItem "/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref" -Directory -EA SilentlyContinue |
+            Where-Object { $_.Name -match "^8\." } | Sort-Object Name | Select-Object -Last 1
+          if ($refPacks) {
+            $refPath = Join-Path $refPacks.FullName "ref" "net8.0"
+            Write-Host "SDK ref pack: $refPath"
             $existing = @{}
-            Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue |
+            Get-ChildItem $dllOutput -Filter "*.dll" -EA SilentlyContinue |
               ForEach-Object { $existing[$_.Name.ToLower()] = $true }
             $copied = 0
-            Get-ChildItem $runtimePath -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-              if (-not $existing[$_.Name.ToLower()]) {
-                Copy-Item $_.FullName $dllOutput -Force
+            foreach ($facade in $missingFacades) {
+              $src = Join-Path $refPath $facade
+              if ((Test-Path $src) -and -not $existing[$facade.ToLower()]) {
+                Copy-Item $src $dllOutput -Force
                 $copied++
+                Write-Host "  Copied facade: $facade"
               }
             }
-            Write-Host "  Copied $copied runtime DLLs not already in platform set"
-          }
-        } catch { Write-Host "WARNING: Could not fill runtime gaps: $_" }
+            Write-Host "  Copied $copied facade DLLs from ref pack"
+          } else { Write-Host "WARNING: .NET 8 ref pack not found" }
+        } catch { Write-Host "WARNING: Could not copy facades: $_" }
 
-        # 7. Build probing paths — single folder with all DLLs merged
+        # 7. Build probing paths — single folder with all DLLs
         if ($dllOutput -and (Test-Path $dllOutput)) {
           $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
           if ($dllCount -gt 0) {
@@ -565,31 +573,38 @@ jobs:
           } catch { Write-Host "  WARNING: Failed to download $($pkg.Name): $_" }
         }
 
-        # 6. Fill gaps from .NET 8 runtime — copy DLLs NOT already in the output folder.
-        # Same approach as Linux: merge into one folder to avoid duplicate assemblies.
+        # 6. Copy ONLY specific missing facade DLLs from the .NET SDK ref pack.
+        # Same as Linux: avoid bulk runtime copy that causes Mono.Cecil stack overflow.
+        $missingFacades = @('netstandard.dll', 'System.Core.dll', 'System.Drawing.dll',
+                            'System.Data.dll', 'System.Xml.dll', 'System.Xml.Linq.dll',
+                            'System.Net.Http.dll', 'System.IO.dll', 'System.Threading.dll',
+                            'System.Runtime.Serialization.dll', 'System.ComponentModel.Composition.dll',
+                            'mscorlib.dll')
         try {
-          $runtimes = & dotnet --list-runtimes 2>&1
-          Write-Host "Installed runtimes: $($runtimes -join ', ')"
-          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
-            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
-          if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
-            $runtimePath = Join-Path $Matches[2].Trim('[',']') $Matches[1]
-            Write-Host "Filling gaps from .NET runtime: $runtimePath"
+          $dotnetRoot = (Get-Command dotnet -EA SilentlyContinue).Source | Split-Path
+          $refPackBase = Join-Path $dotnetRoot "packs" "Microsoft.NETCore.App.Ref"
+          $refPacks = Get-ChildItem $refPackBase -Directory -EA SilentlyContinue |
+            Where-Object { $_.Name -match "^8\." } | Sort-Object Name | Select-Object -Last 1
+          if ($refPacks) {
+            $refPath = Join-Path $refPacks.FullName "ref" "net8.0"
+            Write-Host "SDK ref pack: $refPath"
             $existing = @{}
-            Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue |
+            Get-ChildItem $dllOutput -Filter "*.dll" -EA SilentlyContinue |
               ForEach-Object { $existing[$_.Name.ToLower()] = $true }
             $copied = 0
-            Get-ChildItem $runtimePath -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-              if (-not $existing[$_.Name.ToLower()]) {
-                Copy-Item $_.FullName $dllOutput -Force
+            foreach ($facade in $missingFacades) {
+              $src = Join-Path $refPath $facade
+              if ((Test-Path $src) -and -not $existing[$facade.ToLower()]) {
+                Copy-Item $src $dllOutput -Force
                 $copied++
+                Write-Host "  Copied facade: $facade"
               }
             }
-            Write-Host "  Copied $copied runtime DLLs not already in platform set"
-          }
-        } catch { Write-Host "WARNING: Could not fill runtime gaps: $_" }
+            Write-Host "  Copied $copied facade DLLs from ref pack"
+          } else { Write-Host "WARNING: .NET 8 ref pack not found at $refPackBase" }
+        } catch { Write-Host "WARNING: Could not copy facades: $_" }
 
-        # 7. Build probing path — single folder with all DLLs merged
+        # 7. Build probing path — single folder with all DLLs
         if ($dllOutput -and (Test-Path $dllOutput)) {
           $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
           if ($dllCount -gt 0) {
