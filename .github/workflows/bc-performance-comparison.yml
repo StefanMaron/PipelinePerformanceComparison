@@ -53,6 +53,7 @@ jobs:
       setup_duration: ${{ steps.record.outputs.setup_duration }}
       download_duration: ${{ steps.record.outputs.download_duration }}
       clone_duration: ${{ steps.record.outputs.clone_duration }}
+      dotnet_dl_duration: ${{ steps.record.outputs.dotnet_dl_duration }}
       compile_duration: ${{ steps.record.outputs.compile_duration }}
       total_duration: ${{ steps.record.outputs.total_duration }}
 
@@ -167,6 +168,34 @@ jobs:
         echo "CLONE_DURATION=$CLONE_DURATION" >> $GITHUB_ENV
         echo "Clone took: $CLONE_DURATION seconds"
 
+    - name: Download BC dotnet packages (partial ZIP)
+      if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
+      run: |
+        STEP_START=$(date +%s.%N)
+
+        python3 scripts/download-dotnetpackages.py bc-dotnetpackages
+
+        # Patch BCApps app.json with absolute path to downloaded dotnet packages
+        DOTNET_PATH="$(pwd)/bc-dotnetpackages"
+        python3 - "$DOTNET_PATH" <<'PYEOF'
+        import json, sys
+        path = sys.argv[1]
+        app_json = 'bcapps-temp/src/System Application/App/app.json'
+        with open(app_json) as f:
+            data = json.load(f)
+        data['assemblyProbingPaths'] = [path]
+        with open(app_json, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f'Set assemblyProbingPaths to: {path}')
+        PYEOF
+
+        STEP_END=$(date +%s.%N)
+        DOTNET_DL_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "DOTNET_DL_DURATION=$DOTNET_DL_DURATION" >> $GITHUB_ENV
+        echo "Dotnet packages download took: $DOTNET_DL_DURATION seconds"
+      env:
+        BC_VERSION: ${{ env.BC_VERSION }}
+
     - name: Compile AL extension
       run: |
         STEP_START=$(date +%s.%N)
@@ -205,11 +234,12 @@ jobs:
       run: |
         END_EPOCH=$(date +%s.%N)
         TOTAL=$(python3 -c "print(f'{$END_EPOCH - $START_EPOCH:.3f}')")
-        echo "total_duration=$TOTAL"                   >> $GITHUB_OUTPUT
-        echo "setup_duration=$SETUP_DURATION"          >> $GITHUB_OUTPUT
-        echo "download_duration=$DOWNLOAD_DURATION"    >> $GITHUB_OUTPUT
-        echo "clone_duration=${CLONE_DURATION:-0}"     >> $GITHUB_OUTPUT
-        echo "compile_duration=$COMPILE_DURATION"      >> $GITHUB_OUTPUT
+        echo "total_duration=$TOTAL"                      >> $GITHUB_OUTPUT
+        echo "setup_duration=$SETUP_DURATION"             >> $GITHUB_OUTPUT
+        echo "download_duration=$DOWNLOAD_DURATION"       >> $GITHUB_OUTPUT
+        echo "clone_duration=${CLONE_DURATION:-0}"        >> $GITHUB_OUTPUT
+        echo "dotnet_dl_duration=${DOTNET_DL_DURATION:-0}" >> $GITHUB_OUTPUT
+        echo "compile_duration=$COMPILE_DURATION"         >> $GITHUB_OUTPUT
 
         COMPILE_TARGET="${{ inputs.compile_target }}"
         [ -z "$COMPILE_TARGET" ] && COMPILE_TARGET="bcapps-system-app"
@@ -223,6 +253,7 @@ jobs:
           "setup_duration": %s,
           "download_duration": %s,
           "clone_duration": %s,
+          "dotnet_dl_duration": %s,
           "compile_duration": %s,
           "timestamp": "%s",
           "github_run_id": "%s",
@@ -231,7 +262,7 @@ jobs:
         }\n' \
           "$COMPILE_TARGET" \
           "$TOTAL" "${SETUP_DURATION:-0}" "${DOWNLOAD_DURATION:-0}" \
-          "${CLONE_DURATION:-0}" "${COMPILE_DURATION:-0}" \
+          "${CLONE_DURATION:-0}" "${DOTNET_DL_DURATION:-0}" "${COMPILE_DURATION:-0}" \
           "$(date -Iseconds)" "$GITHUB_RUN_ID" \
           > linux-compile-metrics.json
         echo "Metrics saved to linux-compile-metrics.json"
@@ -255,6 +286,7 @@ jobs:
       setup_duration: ${{ steps.record.outputs.setup_duration }}
       download_duration: ${{ steps.record.outputs.download_duration }}
       clone_duration: ${{ steps.record.outputs.clone_duration }}
+      dotnet_dl_duration: ${{ steps.record.outputs.dotnet_dl_duration }}
       compile_duration: ${{ steps.record.outputs.compile_duration }}
       total_duration: ${{ steps.record.outputs.total_duration }}
 
@@ -273,7 +305,7 @@ jobs:
       with:
         dotnet-version: '8.0.x'
 
-    - name: Install AL tools
+    - name: Install AL tools and BcContainerHelper
       shell: powershell
       run: |
         $start = Get-Date
@@ -281,10 +313,14 @@ jobs:
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools `
           --version ${{ env.AL_TOOLS_VERSION }}
 
-        # Record duration BEFORE any AL --version call (AL exits with 1 by design)
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+        Install-Module -Name BcContainerHelper -Force -AllowClobber -Scope CurrentUser
+        Import-Module BcContainerHelper -Force -DisableNameChecking
+
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
         echo "SETUP_DURATION=$dur" >> $env:GITHUB_ENV
-        Write-Host "AL tools install took: $dur seconds"
+        Write-Host "Setup took: $dur seconds"
 
         # AL --version exits with code 1 by design; suppress it explicitly
         $ErrorActionPreference = "Continue"
@@ -309,7 +345,6 @@ jobs:
           } catch { Write-Host "  WARNING: $name - $($_.Exception.Message)" }
         }
 
-        # System Application only needs platform symbols, but download all for full-pipeline use
         dl "platform" "$b/microsoft.platform.symbols/$p/microsoft.platform.symbols.$p.nupkg" "temp_packages\platform.nupkg"
         $id1 = "63ca2fa4-4f03-4f2b-a480-172fef340d3f"
         dl "systemapp" "$b/microsoft.systemapplication.us.symbols.$id1/$v/microsoft.systemapplication.us.symbols.$id1.$v.nupkg" "temp_packages\systemapp.nupkg"
@@ -365,6 +400,47 @@ jobs:
         echo "CLONE_DURATION=$dur" >> $env:GITHUB_ENV
         Write-Host "Clone took: $dur seconds"
 
+    - name: Setup BC compiler folder via BcContainerHelper (dotnet packages)
+      if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
+      shell: powershell
+      run: |
+        Import-Module BcContainerHelper -Force -DisableNameChecking
+        $start = Get-Date
+
+        # Get artifact URL for BC version and create a compiler folder.
+        # New-BcCompilerFolder downloads the AL compiler + dotnetpackages from the
+        # BC artifacts CDN (no container needed) and returns the folder path.
+        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "${{ env.BC_VERSION }}" -country w1
+        Write-Host "Artifact URL: $artifactUrl"
+
+        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder "bc-compiler-cache"
+        echo "BC_COMPILER_FOLDER=$compilerFolder" >> $env:GITHUB_ENV
+        Write-Host "Compiler folder: $compilerFolder"
+
+        # The dotnetpackages are inside the compiler folder
+        $dotnetPath = Join-Path $compilerFolder "dotnetpackages"
+        if (Test-Path $dotnetPath) {
+          Write-Host "dotnetpackages found at: $dotnetPath"
+          $count = (Get-ChildItem $dotnetPath -Recurse -File).Count
+          Write-Host "  Files: $count"
+        } else {
+          Write-Host "WARNING: dotnetpackages not found at $dotnetPath"
+          Write-Host "Compiler folder contents:"
+          Get-ChildItem $compilerFolder | Select-Object Name
+        }
+        echo "DOTNET_PATH=$dotnetPath" >> $env:GITHUB_ENV
+
+        # Patch BCApps app.json with the dotnetpackages path
+        $appJson = "bcapps-temp\src\System Application\App\app.json"
+        $data = Get-Content $appJson | ConvertFrom-Json
+        $data | Add-Member -NotePropertyName assemblyProbingPaths -NotePropertyValue @($dotnetPath) -Force
+        $data | ConvertTo-Json -Depth 10 | Out-File $appJson -Encoding UTF8
+        Write-Host "Patched assemblyProbingPaths in app.json"
+
+        $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
+        echo "DOTNET_DL_DURATION=$dur" >> $env:GITHUB_ENV
+        Write-Host "Compiler folder setup took: $dur seconds"
+
     - name: Compile AL extension
       shell: powershell
       run: |
@@ -381,9 +457,19 @@ jobs:
           Write-Host "Compiling: sample extension"
         }
 
-        # Capture exit code without letting PowerShell throw on non-zero
+        # Use the AL compiler from the BcContainerHelper compiler folder if available,
+        # otherwise fall back to our NuGet-installed one
+        $compilerFolder = $env:BC_COMPILER_FOLDER
+        if ($compilerFolder -and (Test-Path "$compilerFolder\compiler\win32\AL.exe")) {
+          $alExe = "$compilerFolder\compiler\win32\AL.exe"
+          Write-Host "Using compiler from: $alExe"
+        } else {
+          $alExe = "AL"
+          Write-Host "Using NuGet AL compiler"
+        }
+
         $ErrorActionPreference = "Continue"
-        AL compile /project:"$projectPath" /packagecachepath:"$symbolsPath"
+        & $alExe compile /project:"$projectPath" /packagecachepath:"$symbolsPath"
         $alExit = $LASTEXITCODE
         $ErrorActionPreference = "Stop"
 
@@ -414,11 +500,12 @@ jobs:
         $target = "${{ inputs.compile_target }}"
         if ([string]::IsNullOrEmpty($target)) { $target = "bcapps-system-app" }
 
-        echo "total_duration=$total"                       >> $env:GITHUB_OUTPUT
-        echo "setup_duration=$env:SETUP_DURATION"         >> $env:GITHUB_OUTPUT
-        echo "download_duration=$env:DOWNLOAD_DURATION"   >> $env:GITHUB_OUTPUT
-        echo "clone_duration=$env:CLONE_DURATION"         >> $env:GITHUB_OUTPUT
-        echo "compile_duration=$env:COMPILE_DURATION"     >> $env:GITHUB_OUTPUT
+        echo "total_duration=$total"                          >> $env:GITHUB_OUTPUT
+        echo "setup_duration=$env:SETUP_DURATION"            >> $env:GITHUB_OUTPUT
+        echo "download_duration=$env:DOWNLOAD_DURATION"      >> $env:GITHUB_OUTPUT
+        echo "clone_duration=$env:CLONE_DURATION"            >> $env:GITHUB_OUTPUT
+        echo "dotnet_dl_duration=$env:DOTNET_DL_DURATION"    >> $env:GITHUB_OUTPUT
+        echo "compile_duration=$env:COMPILE_DURATION"        >> $env:GITHUB_OUTPUT
 
         @{
           platform          = "windows"
@@ -429,6 +516,7 @@ jobs:
           setup_duration    = [double]$env:SETUP_DURATION
           download_duration = [double]$env:DOWNLOAD_DURATION
           clone_duration    = if ($env:CLONE_DURATION) { [double]$env:CLONE_DURATION } else { 0.0 }
+          dotnet_dl_duration = if ($env:DOTNET_DL_DURATION) { [double]$env:DOTNET_DL_DURATION } else { 0.0 }
           compile_duration  = [double]$env:COMPILE_DURATION
           timestamp         = $endTime.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
           github_run_id     = $env:GITHUB_RUN_ID
@@ -950,6 +1038,11 @@ jobs:
             ]
             if has_clone:
                 rows.append(('BCApps clone', fmt(lc.get('clone_duration')), fmt(wc.get('clone_duration')), speedup(lc.get('clone_duration'), wc.get('clone_duration'))))
+            has_dotnet = lc.get('dotnet_dl_duration') or wc.get('dotnet_dl_duration')
+            if has_dotnet:
+                lc_label = 'Partial ZIP (Python)'
+                wc_label = 'New-BcCompilerFolder'
+                rows.append((f'Dotnet packages ({lc_label} / {wc_label})', fmt(lc.get('dotnet_dl_duration')), fmt(wc.get('dotnet_dl_duration')), speedup(lc.get('dotnet_dl_duration'), wc.get('dotnet_dl_duration'))))
             rows += [
                 ('AL compilation',            fmt(lc.get('compile_duration')),               fmt(wc.get('compile_duration')),                speedup(lc.get('compile_duration'),  wc.get('compile_duration'))),
                 ('**Total (measured)**',      f"**{fmt(lc.get('total_duration'))}**",        f"**{fmt(wc.get('total_duration'))}**",         f"**{speedup(lc.get('total_duration'), wc.get('total_duration'))}**"),
