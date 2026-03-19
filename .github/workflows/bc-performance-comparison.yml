@@ -765,10 +765,7 @@ jobs:
         cp config/secret.key secret.key
 
         # Override .env to use w1 (matching our symbols) instead of hardcoded de
-        cat > .env <<'ENVEOF'
-SA_PASSWORD=P@ssw0rd123!
-BC_ARTIFACT_URL=
-ENVEOF
+        printf 'SA_PASSWORD=P@ssw0rd123!\nBC_ARTIFACT_URL=\n' > .env
 
         # Ensure ADMIN_PASSWORD is explicitly passed to the BC container
         # (compose.yml doesn't include it in the environment section by default)
