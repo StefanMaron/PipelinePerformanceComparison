@@ -237,39 +237,18 @@ jobs:
           } catch { Write-Host "  WARNING: Failed to download $($pkg.Name): $_" }
         }
 
-        # 6. Find installed .NET 8 runtime paths (exclude .NET 9/10 — they crash the AL compiler)
-        $runtimePaths = @()
-        try {
-          $runtimes = & dotnet --list-runtimes 2>&1
-          Write-Host "Installed runtimes: $($runtimes -join ', ')"
-          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
-            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
-          if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
-            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
-            if (Test-Path $p) { $runtimePaths += $p; Write-Host "NETCore.App: $p" }
-          }
-          $aspRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.AspNetCore\.App ([0-9]+)\." } |
-            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
-          if ($aspRuntime -match "Microsoft\.AspNetCore\.App ([0-9.]+) \[(.+)\]") {
-            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
-            if (Test-Path $p) { $runtimePaths += $p; Write-Host "AspNetCore.App: $p" }
-          }
-        } catch { Write-Host "Could not enumerate .NET runtimes: $_" }
-
-        # 7. Build combined probing paths
-        $allPaths = @()
+        # 6. Build probing paths — only BC managed DLLs + NuGet packages, NO .NET runtime paths.
+        # The BC platform artifact contains its own System.* managed DLLs with type forwarding
+        # chains. Adding .NET runtime paths creates duplicate System.* assemblies that cause
+        # Mono.Cecil stack overflow during circular type forwarding resolution.
         if ($dllOutput -and (Test-Path $dllOutput)) {
           $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
-          if ($dllCount -gt 0) { $allPaths += $dllOutput; Write-Host "BC managed DLLs: $dllCount files" }
-        }
-        $allPaths += $runtimePaths
-
-        if ($allPaths.Count -gt 0) {
-          $combined = $allPaths -join ";"
-          Write-Host "assemblyProbingPaths ($($allPaths.Count) paths): $combined"
-          echo "DOTNET_PATH=$combined" >> $env:GITHUB_ENV
-        } else {
-          Write-Host "WARNING: No DLL probing paths found - compilation may fail with AL0451"
+          if ($dllCount -gt 0) {
+            Write-Host "BC managed DLLs + NuGet packages: $dllCount files"
+            echo "DOTNET_PATH=$dllOutput" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "WARNING: No managed DLLs found - compilation may fail"
+          }
         }
 
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)

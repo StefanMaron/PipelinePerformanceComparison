@@ -290,16 +290,13 @@ def main():
                 print(f"  WARNING: Unsupported compression {entry['comp_method']} for {basename}, skipping")
                 continue
 
-            # bc-managed-dlls mode: skip native binaries AND .NET runtime DLLs.
-            # Native Windows DLLs cause SIGABRT on Linux / heap corruption on Windows.
-            # Runtime DLLs (System.*, etc.) from the BC platform duplicate the host
-            # .NET runtime and cause Mono.Cecil stack overflow during type resolution.
-            # The .NET runtime paths in assemblyProbingPaths provide these instead.
+            # bc-managed-dlls mode: skip native (non-managed) binaries only.
+            # Native Windows DLLs cause SIGABRT on Linux / heap corruption on Windows
+            # when the AL compiler (via Mono.Cecil) tries to reflect on them.
+            # We keep ALL managed DLLs including System.* — the compiler needs them
+            # for type forwarding resolution. Do NOT add .NET runtime paths alongside
+            # these, or duplicate System.* DLLs cause Mono.Cecil stack overflow.
             if mode == 'bc-managed-dlls':
-                basename_lower = basename.lower()
-                if any(basename_lower.startswith(p) for p in _RUNTIME_DLL_PREFIXES):
-                    skipped_runtime += 1
-                    continue
                 if not is_managed_assembly(file_data):
                     skipped_native += 1
                     continue
