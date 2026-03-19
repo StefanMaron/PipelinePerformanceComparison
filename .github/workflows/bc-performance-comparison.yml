@@ -220,27 +220,25 @@ jobs:
           Write-Host "OpenXML: $($openXmlDll.Name)"
         }
 
-        # 7. Build probing paths: OpenXML, AL tools bundled runtime, Service
-        # BcContainerHelper on Linux doesn't add system .NET runtime paths (causes
-        # Mono.Cecil circular type forwarding → stack overflow). However, the NuGet
-        # AL tools (unlike the VSIX compiler BcContainerHelper uses) need the basic
-        # .NET types to be resolvable. Use the compiler's OWN bundled runtime DLLs
-        # as the probing path — these are compatible with the compiler's Mono.Cecil.
+        # 7. Build probing paths: OpenXML, .NET ref assemblies, Service
+        # Runtime .NET assemblies cause Mono.Cecil circular type forwarding → stack overflow.
+        # SDK reference assemblies (ref pack) are compilation-only facades with type
+        # definitions but no forwarding chains — safe for Mono.Cecil resolution.
         $probingPaths = @()
         if (Test-Path $openXmlPath) { $probingPaths += $openXmlPath }
 
-        # Find the NuGet AL tools' bundled assembly directory
-        $toolStore = Join-Path $env:HOME ".dotnet/tools/.store"
-        $alcToolDir = Get-ChildItem $toolStore -Directory -Filter "microsoft.dynamics.businesscentral.development.tools.linux" -EA SilentlyContinue | Select-Object -First 1
-        if ($alcToolDir) {
-          $alcDllPath = Get-ChildItem $alcToolDir.FullName -Directory -Recurse -Filter "any" -EA SilentlyContinue |
-            Where-Object { Test-Path (Join-Path $_.FullName "alc.dll") } | Select-Object -First 1
-          if ($alcDllPath) {
-            $probingPaths += $alcDllPath.FullName
-            $alcDllCount = (Get-ChildItem $alcDllPath.FullName -Filter "*.dll" -EA SilentlyContinue).Count
-            Write-Host "AL tools runtime: $($alcDllPath.FullName) ($alcDllCount DLLs)"
-          } else { Write-Host "WARNING: Could not find alc.dll in tool store" }
-        } else { Write-Host "WARNING: Could not find AL tools in .dotnet tool store" }
+        # Find .NET SDK reference assemblies (ref pack)
+        $refPackBase = "/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref"
+        $refPack = Get-ChildItem $refPackBase -Directory -EA SilentlyContinue |
+          Where-Object { $_.Name -match "^8\." } | Sort-Object Name -Descending | Select-Object -First 1
+        if ($refPack) {
+          $refPath = Join-Path $refPack.FullName "ref/net8.0"
+          if (Test-Path $refPath) {
+            $probingPaths += $refPath
+            $refCount = (Get-ChildItem $refPath -Filter "*.dll" -EA SilentlyContinue).Count
+            Write-Host "Ref pack: $refPath ($refCount DLLs)"
+          }
+        } else { Write-Host "WARNING: No .NET 8 ref pack found at $refPackBase" }
 
         if (Test-Path $servicePath) { $probingPaths += $servicePath }
 
