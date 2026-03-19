@@ -235,30 +235,28 @@ jobs:
       shell: powershell
       run: |
         $start = Get-Date
-        $base = "${{ env.BC_SYMBOLS_BASE_URL }}"
-        $ver  = "${{ env.BC_VERSION }}"
-        $pver = "${{ env.PLATFORM_VERSION }}"
+        $b = "${{ env.BC_SYMBOLS_BASE_URL }}"
+        $v = "${{ env.BC_VERSION }}"
+        $p = "${{ env.PLATFORM_VERSION }}"
 
         New-Item -ItemType Directory -Path temp_packages, .alpackages -Force | Out-Null
 
-        $packages = @{
-          "platform"        = "$base/microsoft.platform.symbols/$pver/microsoft.platform.symbols.$pver.nupkg"
-          "systemapp"       = "$base/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$ver/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$ver.nupkg"
-          "baseapp"         = "$base/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972/$ver/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972.$ver.nupkg"
-          "app"             = "$base/microsoft.application.us.symbols/$ver/microsoft.application.us.symbols.$ver.nupkg"
-          "bizfoundation"   = "$base/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$ver/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$ver.nupkg"
+        function dl($name, $url, $out) {
+          Write-Host "Downloading $name..."
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -EA Stop
+            Write-Host "  OK: $([math]::Round((Get-Item $out).Length/1MB,2)) MB"
+          } catch { Write-Host "  WARNING: $name - $($_.Exception.Message)" }
         }
 
-        foreach ($name in $packages.Keys) {
-          Write-Host "Downloading $name..."
-          $out = "temp_packages\$name.nupkg"
-          try {
-            Invoke-WebRequest -Uri $packages[$name] -OutFile $out -UseBasicParsing -EA Stop
-            Write-Host "  OK: $([math]::Round((Get-Item $out).Length / 1MB, 2)) MB"
-          } catch {
-            Write-Host "  WARNING: failed to download $name — $($_.Exception.Message)"
-          }
-        }
+        dl "platform"      "$b/microsoft.platform.symbols/$p/microsoft.platform.symbols.$p.nupkg" "temp_packages\platform.nupkg"
+        $id1 = "63ca2fa4-4f03-4f2b-a480-172fef340d3f"
+        dl "systemapp"     "$b/microsoft.systemapplication.us.symbols.$id1/$v/microsoft.systemapplication.us.symbols.$id1.$v.nupkg" "temp_packages\systemapp.nupkg"
+        $id2 = "437dbf0e-84ff-417a-965d-ed2bb9650972"
+        dl "baseapp"       "$b/microsoft.baseapplication.us.symbols.$id2/$v/microsoft.baseapplication.us.symbols.$id2.$v.nupkg" "temp_packages\baseapp.nupkg"
+        dl "app"           "$b/microsoft.application.us.symbols/$v/microsoft.application.us.symbols.$v.nupkg" "temp_packages\app.nupkg"
+        $id3 = "f3552374-a1f2-4356-848e-196002525837"
+        dl "bizfoundation" "$b/microsoft.businessfoundation.us.symbols.$id3/$v/microsoft.businessfoundation.us.symbols.$id3.$v.nupkg" "temp_packages\bizfoundation.nupkg"
 
         # Extract .app files from each .nupkg (which are zip files)
         Get-ChildItem temp_packages -Filter "*.nupkg" | Where-Object { $_.Length -gt 0 } | ForEach-Object {
