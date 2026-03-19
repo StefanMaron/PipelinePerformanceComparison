@@ -276,11 +276,22 @@ jobs:
         PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/$LATEST_VERSION/platform"
         SIZE=$(curl -sI "$PLATFORM_URL" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\r')
 
-        mkdir -p test-toolkit-apps
+        mkdir -p test-toolkit-apps mock-assemblies
         python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" test-toolkit-apps test-toolkit
+        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" mock-assemblies mock-assemblies
         cp test-toolkit-apps/*.app .alpackages/ 2>/dev/null || true
         echo "Test toolkit symbols added to .alpackages:"
         ls -la test-toolkit-apps/
+        echo "Mock assemblies:"
+        ls -la mock-assemblies/
+
+        # Add mock assemblies to assembly probing paths
+        MOCK_PATH="$(pwd)/mock-assemblies"
+        if [ -n "$DOTNET_PATH" ]; then
+          echo "DOTNET_PATH=$DOTNET_PATH,$MOCK_PATH" >> $GITHUB_ENV
+        else
+          echo "DOTNET_PATH=$MOCK_PATH" >> $GITHUB_ENV
+        fi
 
     - name: Compile AL extension
       env:
@@ -655,14 +666,24 @@ jobs:
         $head = Invoke-WebRequest -Uri $platformUrl -Method Head -UseBasicParsing
         $totalSize = [long]($head.Headers['Content-Length'] | Select-Object -First 1)
 
-        New-Item -ItemType Directory -Path test-toolkit-apps -Force | Out-Null
+        New-Item -ItemType Directory -Path test-toolkit-apps, mock-assemblies -Force | Out-Null
         $scriptPath = Join-Path (Join-Path $env:GITHUB_WORKSPACE "scripts") "download-dotnetpackages.py"
         & python3 $scriptPath $platformUrl $totalSize test-toolkit-apps test-toolkit
+        & python3 $scriptPath $platformUrl $totalSize mock-assemblies mock-assemblies
 
         Get-ChildItem test-toolkit-apps -Filter "*.app" | ForEach-Object {
           Copy-Item $_.FullName ".alpackages\" -Force
           Write-Host "  Copied to .alpackages: $($_.Name)"
         }
+
+        # Add mock assemblies to assembly probing paths
+        $mockPath = Join-Path $PWD "mock-assemblies"
+        if ($env:DOTNET_PATH) {
+          echo "DOTNET_PATH=$env:DOTNET_PATH,$mockPath" >> $env:GITHUB_ENV
+        } else {
+          echo "DOTNET_PATH=$mockPath" >> $env:GITHUB_ENV
+        }
+        Write-Host "Mock assemblies: $(Get-ChildItem $mockPath -Filter '*.dll' | Measure-Object | Select-Object -ExpandProperty Count) DLLs"
 
     - name: Compile AL extension
       shell: powershell
@@ -896,6 +917,12 @@ jobs:
         mkdir -p "$SERVICE_PATH"
         python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" "$SERVICE_PATH" service-dlls
 
+        # Download mock assemblies (MockTest.dll etc. needed for System Application Test)
+        MOCK_PATH="$(pwd)/mock-assemblies"
+        mkdir -p "$MOCK_PATH"
+        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" "$MOCK_PATH" mock-assemblies
+        echo "Mock assemblies: $(find "$MOCK_PATH" -name "*.dll" | wc -l) DLLs"
+
         # Remove subdirectories that BcContainerHelper removes
         for sub in Management WindowsServiceInstaller SideServices; do
           [ -d "$SERVICE_PATH/$sub" ] && rm -rf "$SERVICE_PATH/$sub" && echo "Removed: $sub"
@@ -906,7 +933,7 @@ jobs:
         mkdir -p "$OPENXML_PATH"
         find "$SERVICE_PATH" -name "DocumentFormat.OpenXml.dll" -exec cp {} "$OPENXML_PATH/" \; 2>/dev/null
 
-        # Build probing paths: OpenXML, .NET ref pack, Service
+        # Build probing paths: OpenXML, .NET ref pack, Service, Mock assemblies
         PROBING_PATHS=""
         [ -d "$OPENXML_PATH" ] && PROBING_PATHS="$OPENXML_PATH"
 
@@ -919,6 +946,7 @@ jobs:
         fi
 
         [ -d "$SERVICE_PATH" ] && PROBING_PATHS="$PROBING_PATHS,$SERVICE_PATH"
+        [ -d "$MOCK_PATH" ] && PROBING_PATHS="$PROBING_PATHS,$MOCK_PATH"
         # Remove leading comma if OpenXML was empty
         PROBING_PATHS=$(echo "$PROBING_PATHS" | sed 's/^,//')
 
@@ -1604,6 +1632,12 @@ jobs:
         & python3 $scriptPath $platformUrl $totalSize $servicePath service-dlls
         if ($LASTEXITCODE -ne 0) { exit 1 }
 
+        # Download mock assemblies (MockTest.dll etc. needed for System Application Test)
+        $mockPath = Join-Path $PWD "mock-assemblies"
+        New-Item -ItemType Directory -Path $mockPath -Force | Out-Null
+        & python3 $scriptPath $platformUrl $totalSize $mockPath mock-assemblies
+        Write-Host "Mock assemblies: $((Get-ChildItem $mockPath -Filter '*.dll' -EA SilentlyContinue).Count) DLLs"
+
         @('Management', 'WindowsServiceInstaller', 'SideServices') | ForEach-Object {
           $sub = Join-Path $servicePath $_
           if (Test-Path $sub) { Remove-Item $sub -Recurse -Force; Write-Host "  Removed: $_" }
@@ -1626,6 +1660,7 @@ jobs:
           }
         } catch {}
         if (Test-Path $servicePath) { $probingPaths += $servicePath }
+        if (Test-Path $mockPath) { $probingPaths += $mockPath }
 
         if ($probingPaths.Count -gt 0) {
           $combined = $probingPaths -join ','

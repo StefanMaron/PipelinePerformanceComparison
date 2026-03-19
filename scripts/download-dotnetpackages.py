@@ -149,6 +149,13 @@ def find_matching_entries(entries, mode):
             if '/test/' in name_lower:
                 matching.append(e)
         return matching
+    elif mode == 'mock-assemblies':
+        # Mock test DLLs from Test Assemblies/Mock Assemblies/ in the platform artifact.
+        # These are needed for compiling System Application Test (e.g. MockTest.dll).
+        return [e for e in entries
+                if 'test assemblies/' in e['name'].lower()
+                and e['name'].lower().endswith('.dll')
+                and e['comp_size'] > 0]
     elif mode in ('service-dlls', 'bc-managed-dlls'):
         # DLL files from ServiceTier/*/Service/ in the platform artifact.
         # Exclude subdirectories that BcContainerHelper removes (their DLLs can
@@ -174,7 +181,7 @@ def find_matching_entries(entries, mode):
 def main():
     if len(sys.argv) < 4 or len(sys.argv) > 5:
         print("Usage: download-dotnetpackages.py <artifact_url> <total_size> <output_dir> [mode]")
-        print("  mode: dotnetpackages (default) | service-dlls | bc-managed-dlls | test-toolkit")
+        print("  mode: dotnetpackages (default) | service-dlls | bc-managed-dlls | test-toolkit | mock-assemblies")
         sys.exit(1)
 
     url        = sys.argv[1]
