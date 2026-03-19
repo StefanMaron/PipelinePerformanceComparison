@@ -220,29 +220,14 @@ jobs:
           Write-Host "OpenXML: $($openXmlDll.Name)"
         }
 
-        # 7. Build probing paths: OpenXML, .NET runtime paths (direct, not copies), Service
-        # Use direct runtime paths like the working Windows approach — copying DLLs into
-        # shared/ conflicts with the NuGet AL tools' bundled .NET runtime.
+        # 7. Build probing paths matching BcContainerHelper Linux behavior:
+        #    OpenXML, Service — NO .NET runtime paths on Linux!
+        #    BcContainerHelper only adds shared/ when installed .NET version is too low.
+        #    On modern runners with .NET 8, the compiler's own runtime handles base type
+        #    resolution. Adding .NET runtime paths causes Mono.Cecil circular type
+        #    forwarding → stack overflow (SIGABRT).
         $probingPaths = @()
         if (Test-Path $openXmlPath) { $probingPaths += $openXmlPath }
-
-        # Add .NET runtime paths directly (same approach as Windows)
-        try {
-          $runtimes = & dotnet --list-runtimes 2>&1
-          $netCoreRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.NETCore\.App ([0-9]+)\." } |
-            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
-          if ($netCoreRuntime -match "Microsoft\.NETCore\.App ([0-9.]+) \[(.+)\]") {
-            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
-            if (Test-Path $p) { $probingPaths += $p; Write-Host "NETCore.App: $p" }
-          }
-          $aspRuntime = $runtimes | Where-Object { $_ -match "Microsoft\.AspNetCore\.App ([0-9]+)\." } |
-            Where-Object { [int]$Matches[1] -lt 9 } | Select-Object -Last 1
-          if ($aspRuntime -match "Microsoft\.AspNetCore\.App ([0-9.]+) \[(.+)\]") {
-            $p = Join-Path $Matches[2].Trim('[',']') $Matches[1]
-            if (Test-Path $p) { $probingPaths += $p; Write-Host "AspNetCore.App: $p" }
-          }
-        } catch { Write-Host "WARNING: Could not enumerate .NET runtimes: $_" }
-
         if (Test-Path $servicePath) { $probingPaths += $servicePath }
 
         $serviceCount = (Get-ChildItem $servicePath -Filter "*.dll" -Recurse -EA SilentlyContinue).Count
