@@ -10,6 +10,10 @@ Modes:
                               'dotnetpackages/' folder in a w1/country artifact.
   service-dlls              - Extract *.dll files from the ServiceTier/*/Service/
                               directory in the platform artifact.
+  test-toolkit              - Extract test framework .app files from the platform
+                              artifact (testframework/, */Test/ folders).  These
+                              are the pre-compiled apps needed for -includeTestToolkit
+                              -includeTestLibrariesOnly equivalent on Linux.
 
 The artifact_url and total_size are obtained beforehand (e.g. via
 Get-BCArtifactUrl + a HEAD request in PowerShell) so this script works
@@ -123,7 +127,29 @@ _RUNTIME_DLL_PREFIXES = (
 
 def find_matching_entries(entries, mode):
     """Return list of non-empty file entries matching the given mode."""
-    if mode in ('service-dlls', 'bc-managed-dlls'):
+    if mode == 'test-toolkit':
+        # Test framework .app files from the platform artifact.
+        # Matches: applications/testframework/**/*.app  (Any, Assert, Test Runner, etc.)
+        #          applications/system application/Test/*.app  (System App Test Library)
+        #          applications/BaseApp/Test/*.app  (Tests-TestLibraries)
+        matching = []
+        for e in entries:
+            name_lower = e['name'].lower()
+            if not name_lower.endswith('.app') or e['comp_size'] <= 0:
+                continue
+            if 'applications/' not in name_lower:
+                continue
+            # Include testframework libs and runner (exclude AI/Performance toolkit)
+            if '/testframework/' in name_lower:
+                after = name_lower.split('/testframework/')[-1]
+                if after.startswith(('testlibraries/', 'testrunner/')):
+                    matching.append(e)
+                continue
+            # Include Test/ subdirectories of main apps (System App Test Library, Tests-TestLibraries)
+            if '/test/' in name_lower:
+                matching.append(e)
+        return matching
+    elif mode in ('service-dlls', 'bc-managed-dlls'):
         # DLL files from ServiceTier/*/Service/ in the platform artifact.
         # Exclude subdirectories that BcContainerHelper removes (their DLLs can
         # overwrite the primary Service/ DLLs during flat extraction).
@@ -148,7 +174,7 @@ def find_matching_entries(entries, mode):
 def main():
     if len(sys.argv) < 4 or len(sys.argv) > 5:
         print("Usage: download-dotnetpackages.py <artifact_url> <total_size> <output_dir> [mode]")
-        print("  mode: dotnetpackages (default) | service-dlls | bc-managed-dlls")
+        print("  mode: dotnetpackages (default) | service-dlls | bc-managed-dlls | test-toolkit")
         sys.exit(1)
 
     url        = sys.argv[1]

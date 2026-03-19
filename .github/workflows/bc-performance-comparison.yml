@@ -41,6 +41,8 @@ env:
   BCDEV_BRANCH: 'v2'
   # BCApps branch that targets platform 26.0.0.0 (matches our platform symbols)
   BCAPPS_BRANCH: 'releases/26.0'
+  # BC artifact CDN base URL — used to download test toolkit .app files from the platform artifact
+  BC_ARTIFACT_BASE: 'https://bcartifacts-exdbf9fwegejdqak.b02.azurefd.net/sandbox'
 
 # ============================================================================
 # LINUX COMPILE JOB
@@ -736,6 +738,35 @@ jobs:
         DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
         echo "DOWNLOAD_DURATION=$DOWNLOAD_DURATION" >> $GITHUB_ENV
 
+    - name: Download test toolkit apps from BC artifact
+      run: |
+        STEP_START=$(date +%s.%N)
+        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/platform"
+        echo "Platform artifact URL: $PLATFORM_URL"
+
+        # Get artifact size via HEAD request
+        SIZE=$(curl -sI "$PLATFORM_URL" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\r')
+        if [ -z "$SIZE" ] || [ "$SIZE" = "0" ]; then
+          echo "ERROR: Could not determine platform artifact size"
+          echo "Trying HEAD request debug:"
+          curl -sI "$PLATFORM_URL" 2>&1 | head -10
+          exit 1
+        fi
+        echo "Platform artifact size: $SIZE bytes"
+
+        mkdir -p test-toolkit-apps
+        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" test-toolkit-apps test-toolkit
+
+        echo "Test toolkit apps downloaded:"
+        ls -la test-toolkit-apps/
+
+        # Also copy to .alpackages so the compiler can resolve test toolkit symbols
+        cp test-toolkit-apps/*.app .alpackages/ 2>/dev/null || true
+
+        STEP_END=$(date +%s.%N)
+        TOOLKIT_DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "TOOLKIT_DOWNLOAD_DURATION=$TOOLKIT_DOWNLOAD_DURATION" >> $GITHUB_ENV
+
     - name: Compile AL extension
       run: |
         STEP_START=$(date +%s.%N)
@@ -852,61 +883,60 @@ jobs:
         docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$SERVICE_CONFIG" 2>&1 | head -1
         cd ..
 
-    - name: Publish app to BC container
+    - name: Publish test toolkit apps to BC container
+      run: |
+        STEP_START=$(date +%s.%N)
+        PUBLISH_URL="http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
+
+        # Publish in dependency order (topological sort)
+        TOOLKIT_APPS=(
+          "Microsoft_Any.app"
+          "Microsoft_Library Assert.app"
+          "Microsoft_Library Variable Storage.app"
+          "Microsoft_Test Runner.app"
+          "Microsoft_Permissions Mock.app"
+          "Microsoft_System Application Test Library.app"
+          "Microsoft_Tests-TestLibraries.app"
+        )
+
+        PUBLISHED=0
+        for app in "${TOOLKIT_APPS[@]}"; do
+          APP_PATH="test-toolkit-apps/$app"
+          if [ -f "$APP_PATH" ]; then
+            echo "Publishing: $app"
+            HTTP_CODE=$(curl -s -o /tmp/publish-response.txt -w "%{http_code}" \
+              -u "admin:Admin123!" -F "file=@$APP_PATH" "$PUBLISH_URL")
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+              echo "  → OK (HTTP $HTTP_CODE)"
+              PUBLISHED=$((PUBLISHED + 1))
+            else
+              echo "  → FAILED (HTTP $HTTP_CODE)"
+              cat /tmp/publish-response.txt 2>/dev/null | head -5
+            fi
+          else
+            echo "WARNING: $app not found in test-toolkit-apps/, skipping"
+          fi
+        done
+
+        echo ""
+        echo "Published $PUBLISHED test toolkit apps"
+        STEP_END=$(date +%s.%N)
+        TOOLKIT_PUBLISH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "TOOLKIT_PUBLISH_DURATION=$TOOLKIT_PUBLISH_DURATION" >> $GITHUB_ENV
+
+    - name: Publish compiled app to BC container
       run: |
         APP_FILE=$(find . -maxdepth 1 -name "*.app" | head -n 1)
         if [ -z "$APP_FILE" ]; then echo "ERROR: no .app file found"; exit 1; fi
         echo "Publishing $APP_FILE..."
-        curl -s -u "admin:Admin123!" \
-             -F "file=@$APP_FILE" \
-             "http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
-
-    - name: Diagnose and fix OData API authentication
-      run: |
-        cd bcdev-temp
-        BC_CONTAINER=$(docker compose ps -q bc)
-        echo "BC container: $BC_CONTAINER"
-
-        echo ""
-        echo "=== 1. Check admin user in SQL ==="
-        docker exec "$BC_CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
-          -S sql -U sa -P 'P@ssw0rd123!' -d BC -C -N \
-          -Q "SELECT [User Security ID], [User Name], [State] FROM [dbo].[User]" 2>&1 || echo "(sqlcmd not in container, trying from sql container)"
-        SQL_CONTAINER=$(docker compose ps -q sql)
-        docker exec "$SQL_CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost -U sa -P 'P@ssw0rd123!' -d BC -C -N \
-          -Q "SELECT u.[User Security ID], u.[User Name], u.[State], CASE WHEN p.[Password] IS NOT NULL AND p.[Password] <> '' THEN 'HAS_PASSWORD' ELSE 'NO_PASSWORD' END as PwdStatus, CASE WHEN p.[WebServices Key] IS NOT NULL AND p.[WebServices Key] <> '' THEN 'HAS_WSKEY' ELSE 'NO_WSKEY' END as WsKeyStatus FROM [dbo].[User] u LEFT JOIN [dbo].[User Property] p ON u.[User Security ID] = p.[User Security ID]" 2>&1 | head -20
-
-        echo ""
-        echo "=== 2. Check WWW-Authenticate header (what auth does BC expect?) ==="
-        curl -s -D - -o /dev/null "http://localhost:7048/BC/api/v2.0/companies" 2>&1 | head -15
-
-        echo ""
-        echo "=== 3. Try from INSIDE the container ==="
-        docker exec "$BC_CONTAINER" curl -s -o /dev/null -w "HTTP %{http_code}" \
-          -u "admin:Admin123!" "http://localhost:7048/BC/api/v2.0/companies" 2>&1 || echo "(curl not in BC container)"
-
-        echo ""
-        echo "=== 4. Try NTLM auth ==="
-        curl -s -o /dev/null -w "HTTP %{http_code}" --ntlm \
-          -u "admin:Admin123!" "http://localhost:7048/BC/api/v2.0/companies" 2>&1
-
-        echo ""
-        echo "=== 5. Try OData V4 endpoint ==="
-        curl -s -o /dev/null -w "HTTP %{http_code}" \
-          -u "admin:Admin123!" "http://localhost:7048/BC/ODataV4/" 2>&1
-
-        echo ""
-        echo "=== 6. Check BC server log for auth errors ==="
-        docker exec "$BC_CONTAINER" tail -50 /var/log/bc-server.log 2>&1 | grep -i -E "auth|login|credential|401|error|exception|user" | tail -20
-        docker exec "$BC_CONTAINER" tail -100 /var/log/bc-server.log 2>&1 | tail -30
-
-        echo ""
-        echo "=== 7. Check CustomSettings auth config ==="
-        docker exec "$BC_CONTAINER" grep -E "CredentialType|ServicesUseNTLM|ApiServicesEnabled|ODataServicesEnabled" \
-          "/root/.local/share/wineprefixes/bc1/drive_c/Program Files/Microsoft Dynamics NAV/260/Service/CustomSettings.config" 2>&1
-
-        cd ..
+        HTTP_CODE=$(curl -s -o /tmp/publish-response.txt -w "%{http_code}" \
+          -u "admin:Admin123!" -F "file=@$APP_FILE" \
+          "http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default")
+        echo "HTTP $HTTP_CODE"
+        if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+          cat /tmp/publish-response.txt 2>/dev/null | head -10
+          exit 1
+        fi
 
     - name: Wait for OData API readiness
       run: |
@@ -1015,20 +1045,23 @@ jobs:
           "total_duration": %s,
           "setup_duration": %s,
           "download_duration": %s,
+          "toolkit_download_duration": %s,
           "compile_duration": %s,
           "image_pull_duration": %s,
           "container_build_duration": %s,
           "container_start_duration": %s,
           "container_total_duration": %s,
+          "toolkit_publish_duration": %s,
           "test_duration": %s,
           "timestamp": "%s",
           "github_run_id": "%s",
           "al_tools_version": "${{ env.AL_TOOLS_VERSION }}",
           "bc_version": "${{ env.BC_VERSION }}"
         }\n' \
-          "$TOTAL" "${SETUP_DURATION:-0}" "${DOWNLOAD_DURATION:-0}" "${COMPILE_DURATION:-0}" \
+          "$TOTAL" "${SETUP_DURATION:-0}" "${DOWNLOAD_DURATION:-0}" \
+          "${TOOLKIT_DOWNLOAD_DURATION:-0}" "${COMPILE_DURATION:-0}" \
           "${IMAGE_PULL_DURATION:-0}" "${CONTAINER_BUILD_DURATION:-0}" "${CONTAINER_DURATION:-0}" \
-          "$CONTAINER_TOTAL" "${TEST_DURATION:-0}" \
+          "$CONTAINER_TOTAL" "${TOOLKIT_PUBLISH_DURATION:-0}" "${TEST_DURATION:-0}" \
           "$(date -Iseconds)" "$GITHUB_RUN_ID" \
           > linux-full-metrics.json
 
@@ -1120,6 +1153,47 @@ jobs:
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
         echo "DOWNLOAD_DURATION=$dur" >> $env:GITHUB_ENV
         Write-Host "Download took: $dur seconds"
+
+    - name: Download test toolkit apps from BC artifact
+      shell: powershell
+      run: |
+        $start = Get-Date
+        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
+        Write-Host "Artifact URL: $artifactUrl"
+
+        # Download and extract platform artifact to get test toolkit .app files
+        $folders = Download-Artifacts -artifactUrl $artifactUrl -includePlatform
+        $platformFolder = $folders[1]  # Second element is platform path
+        Write-Host "Platform folder: $platformFolder"
+
+        # Collect test toolkit .app files
+        New-Item -ItemType Directory -Path test-toolkit-apps -Force | Out-Null
+        $testFrameworkPath = Join-Path $platformFolder "Applications" "testframework"
+        if (Test-Path $testFrameworkPath) {
+          Get-ChildItem -Path $testFrameworkPath -Filter "*.app" -Recurse | ForEach-Object {
+            Copy-Item $_.FullName "test-toolkit-apps\" -Force
+            Write-Host "  Found: $($_.Name)"
+          }
+        }
+        # System Application Test Library and Tests-TestLibraries
+        Get-ChildItem -Path (Join-Path $platformFolder "Applications") -Directory | ForEach-Object {
+          $testDir = Join-Path $_.FullName "Test"
+          if (Test-Path $testDir) {
+            Get-ChildItem -Path $testDir -Filter "*.app" | ForEach-Object {
+              Copy-Item $_.FullName "test-toolkit-apps\" -Force
+              Write-Host "  Found: $($_.Name)"
+            }
+          }
+        }
+
+        # Copy to .alpackages for compilation symbol resolution
+        Get-ChildItem test-toolkit-apps -Filter "*.app" | ForEach-Object {
+          Copy-Item $_.FullName ".alpackages\" -Force
+        }
+
+        $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
+        echo "TOOLKIT_DOWNLOAD_DURATION=$dur" >> $env:GITHUB_ENV
+        Write-Host "Test toolkit download took: $dur seconds"
 
     - name: Compile AL extension
       shell: powershell
