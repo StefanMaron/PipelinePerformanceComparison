@@ -275,10 +275,11 @@ jobs:
           echo "Compiling: sample extension"
         fi
 
-        # Fix Windows backslash path separators in resource references for Linux
-        # AL compiler on Linux doesn't convert \ to / in ControlAddin resource paths
-        find "$PROJECT_PATH" -name "*.al" -exec sed -i "s|'Resources\\\\|'Resources/|g" {} \;
-        FIXED=$(grep -rl "Resources/" "$PROJECT_PATH" --include="*.al" 2>/dev/null | wc -l)
+        # Fix Windows backslash path separators in resource references for Linux.
+        # AL compiler on Linux doesn't convert \ to / in ControlAddin resource paths.
+        # Replace ALL backslashes within single-quoted path strings in .al files.
+        find "$PROJECT_PATH" -name "*.al" -exec sed -i 's|\\|/|g' {} \;
+        FIXED=$(find "$PROJECT_PATH" -name "*.al" -newer "$PROJECT_PATH/app.json" 2>/dev/null | wc -l)
         echo "Fixed backslash paths in $FIXED .al files"
 
         EXTRA_ARGS=""
