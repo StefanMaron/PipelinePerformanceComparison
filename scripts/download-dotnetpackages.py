@@ -345,51 +345,66 @@ def main():
             for e in matching:
                 all_tagged.append((e, mode, out_dir))
 
-        # Deduplicate entries by offset (same file might match multiple modes)
-        seen_offsets = set()
-        unique_entries = []
-        for entry, mode, out_dir in all_tagged:
-            key = entry['offset']
-            if key not in seen_offsets:
-                seen_offsets.add(key)
-                unique_entries.append(entry)
+        # Step 4: Cluster matching entries into compact byte ranges.
+        # Entries from different modes (e.g. ServiceTier/ vs applications/) may be
+        # far apart in the archive.  A single contiguous range would download the
+        # entire file.  Instead, sort by offset and split whenever the gap between
+        # consecutive entries exceeds a threshold (10 MB).
+        GAP_THRESHOLD = 10 * 1024 * 1024  # 10 MB
 
-        # Step 4: Calculate the byte range that covers ALL matching entries across all modes
-        first_offset = min(e['offset'] for e in unique_entries)
-        max_offset   = max(e['offset'] for e in unique_entries)
+        sorted_tagged = sorted(all_tagged, key=lambda t: t[0]['offset'])
+        clusters = []   # list of lists of (entry, mode, out_dir)
+        current = [sorted_tagged[0]]
+        for item in sorted_tagged[1:]:
+            prev_entry = current[-1][0]
+            prev_end = prev_entry['offset'] + 30 + len(prev_entry['name'].encode('utf-8')) + 256 + prev_entry['comp_size']
+            if item[0]['offset'] - prev_end > GAP_THRESHOLD:
+                clusters.append(current)
+                current = [item]
+            else:
+                current.append(item)
+        clusters.append(current)
 
-        # Include non-matching entries that fall within the range (may be interleaved)
-        all_in_range = sorted(
-            [e for e in entries if first_offset <= e['offset'] <= max_offset],
-            key=lambda e: e['offset']
-        )
+        print(f"\nClustered into {len(clusters)} range(s)")
 
-        range_end = 0
-        for e in all_in_range:
-            # local header (30) + name + extra (256 safety margin) + compressed data
-            entry_end = e['offset'] + 30 + len(e['name'].encode('utf-8')) + 256 + e['comp_size']
-            range_end = max(range_end, entry_end)
+        # Step 5+6: Download and extract each cluster independently
+        extracted = 0
+        total_bytes = 0
 
-        download_size = range_end - first_offset
-        if download_size > total_size * 0.8:
-            print(f"ERROR: Range ({download_size // 1048576} MB) exceeds 80% of total ({total_size // 1048576} MB), aborting")
-            sys.exit(1)
+        for ci, cluster in enumerate(clusters):
+            cluster_offsets = [t[0]['offset'] for t in cluster]
+            first_offset = min(cluster_offsets)
+            max_offset   = max(cluster_offsets)
 
-        savings = round((1 - download_size / total_size) * 100)
-        print(f"\nDownloading range {first_offset}-{range_end} ({download_size // 1048576} MB, {savings}% savings vs full download)")
+            # Include interleaved entries to calculate correct range end
+            all_in_range = sorted(
+                [e for e in entries if first_offset <= e['offset'] <= max_offset],
+                key=lambda e: e['offset']
+            )
+            range_end = 0
+            for e in all_in_range:
+                entry_end = e['offset'] + 30 + len(e['name'].encode('utf-8')) + 256 + e['comp_size']
+                range_end = max(range_end, entry_end)
 
-        # Step 5: Download the range as one bulk request
-        range_file = os.path.join(tmp_dir, 'range.bin')
-        if not download(url, range_file, f'{first_offset}-{range_end}'):
-            sys.exit(1)
+            download_size = range_end - first_offset
+            modes_in_cluster = sorted(set(m for _, m, _ in cluster))
+            savings = round((1 - download_size / total_size) * 100)
+            print(f"  Range {ci+1}: {first_offset}-{range_end} ({download_size // 1048576} MB, {savings}% savings) [{', '.join(modes_in_cluster)}]")
 
-        with open(range_file, 'rb') as f:
-            data = f.read()
-        print(f"Downloaded {len(data):,} bytes")
-        print()
+            range_file = os.path.join(tmp_dir, f'range_{ci}.bin')
+            if not download(url, range_file, f'{first_offset}-{range_end}'):
+                sys.exit(1)
 
-        # Step 6: Extract all matching files from the range buffer
-        extracted, total_bytes = extract_entries(data, first_offset, all_tagged)
+            with open(range_file, 'rb') as f:
+                data = f.read()
+
+            c_extracted, c_bytes = extract_entries(data, first_offset, cluster)
+            extracted   += c_extracted
+            total_bytes += c_bytes
+
+            # Free memory before next cluster
+            del data
+            os.remove(range_file)
 
         print()
         print(f"Extracted : {extracted} files  ({total_bytes // 1024} KB)")
