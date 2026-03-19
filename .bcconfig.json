@@ -1,0 +1,9 @@
+{
+  "server": "https://cosmo-alpaca-enterprise.westeurope.cloudapp.azure.com",
+  "instance": "f0741efc3db7dev",
+  "tenant": "default",
+  "port": 443,
+  "username": "admin",
+  "password": "P@ssw0rd",
+  "schemaUpdateMode": "ForceSync"
+}

@@ -218,6 +218,8 @@ page 50002 "Codeunit Run Requests"
     procedure RunCodeunit(): Boolean
     var
         TestRunnerAPI: Codeunit "Test Runner API";
+        CodeCoverageMgt: Codeunit "Code Coverage Mgt.";
+        CoverageBuilder: Codeunit "Coverage Report Builder";
         Log: Record "Log Table";
         Success: Boolean;
         FailedTests: Integer;
@@ -229,13 +231,20 @@ page 50002 "Codeunit Run Requests"
         Rec.Status := Rec.Status::Running;
         Rec.Modify(true);
 
+        // Start code coverage before test execution
+        CodeCoverageMgt.Start(false);
+
         // Use the Test Runner API to execute the codeunit
-        // This properly handles both test codeunits (Subtype = Test) and regular codeunits
         ClearLastError();
-        Commit(); // Required before running test codeunits to ensure clean transaction state
+        Commit();
 
         TestRunnerAPI.SetCodeunitId(Rec.CodeunitId);
         Success := TestRunnerAPI.Run();
+
+        // Stop coverage and persist results
+        CodeCoverageMgt.Stop();
+        CodeCoverageMgt.Refresh();
+        CoverageBuilder.BuildAndStore();
 
         // Check if any individual tests failed
         Log.SetRange(Success, false);
