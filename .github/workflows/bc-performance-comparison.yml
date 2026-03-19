@@ -168,7 +168,7 @@ jobs:
         echo "CLONE_DURATION=$CLONE_DURATION" >> $GITHUB_ENV
         echo "Clone took: $CLONE_DURATION seconds"
 
-    - name: Download dotnet packages (range download)
+    - name: Setup BC compiler folder (dotnet packages)
       if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
       shell: pwsh
       run: |
@@ -176,28 +176,27 @@ jobs:
         Install-Module -Name BcContainerHelper -Force -AllowClobber -Scope CurrentUser | Out-Null
         Import-Module BcContainerHelper -Force -DisableNameChecking
 
-        # Get latest BC 26 W1 artifact URL, then derive the platform artifact URL from it
-        $w1Url = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
-        if (-not $w1Url) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
-        $platformUrl = $w1Url -replace '/w1$', '/platform'
-        Write-Host "Platform artifact URL: $platformUrl"
+        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
+        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
+        Write-Host "Artifact URL: $artifactUrl"
 
-        # HEAD request to get file size (required by the range-download script)
-        $response = Invoke-WebRequest -Uri $platformUrl -Method Head -UseBasicParsing
-        $totalSize = [long]($response.Headers['Content-Length'] | Select-Object -First 1)
-        Write-Host "Platform artifact size: $([math]::Round($totalSize / 1MB)) MB"
+        # Use absolute path via RUNNER_TEMP to avoid BcContainerHelper path-doubling bug on Linux
+        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder (Join-Path $env:RUNNER_TEMP "bc-compiler-cache")
+        Write-Host "Compiler folder: $compilerFolder"
 
-        $outDir = Join-Path $env:RUNNER_TEMP "dotnetpackages"
-        python3 scripts/download-dotnetpackages.py $platformUrl $totalSize $outDir
-        if ($LASTEXITCODE -ne 0) { throw "dotnet packages download failed (exit $LASTEXITCODE)" }
-
-        $count = (Get-ChildItem $outDir -File).Count
-        Write-Host "dotnetpackages extracted: $count files in $outDir"
-        echo "DOTNET_PATH=$outDir" >> $env:GITHUB_ENV
+        $dotnetPath = Join-Path $compilerFolder "dotnetpackages"
+        if (Test-Path $dotnetPath) {
+          $count = (Get-ChildItem $dotnetPath -File).Count
+          Write-Host "dotnetpackages: $dotnetPath ($count files)"
+        } else {
+          Write-Host "WARNING: dotnetpackages not found at $dotnetPath"
+          Get-ChildItem $compilerFolder | Select-Object Name
+        }
+        echo "DOTNET_PATH=$dotnetPath" >> $env:GITHUB_ENV
 
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
         echo "DOTNET_DL_DURATION=$dur" >> $env:GITHUB_ENV
-        Write-Host "Dotnet packages download took: $dur seconds"
+        Write-Host "Compiler folder setup took: $dur seconds"
 
     - name: Compile AL extension
       run: |
@@ -214,7 +213,7 @@ jobs:
 
         EXTRA_ARGS=""
         if [ -n "$DOTNET_PATH" ]; then
-          EXTRA_ARGS="/assemblyProbingPaths:\"$DOTNET_PATH\""
+          EXTRA_ARGS="/assemblyProbingPaths:$DOTNET_PATH"
         fi
         AL compile /project:"$PROJECT_PATH" /packagecachepath:"$SYMBOLS_PATH" $EXTRA_ARGS
         AL_EXIT=$?
@@ -407,35 +406,34 @@ jobs:
         echo "CLONE_DURATION=$dur" >> $env:GITHUB_ENV
         Write-Host "Clone took: $dur seconds"
 
-    - name: Download dotnet packages (range download)
+    - name: Setup BC compiler folder (dotnet packages)
       if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
       shell: powershell
       run: |
         Import-Module BcContainerHelper -Force -DisableNameChecking
         $start = Get-Date
 
-        # Get latest BC 26 W1 artifact URL, then derive the platform artifact URL from it
-        $w1Url = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
-        if (-not $w1Url) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
-        $platformUrl = $w1Url -replace '/w1$', '/platform'
-        Write-Host "Platform artifact URL: $platformUrl"
+        $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
+        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
+        Write-Host "Artifact URL: $artifactUrl"
 
-        # HEAD request to get file size (required by the range-download script)
-        $response = Invoke-WebRequest -Uri $platformUrl -Method Head -UseBasicParsing
-        $totalSize = [long]($response.Headers['Content-Length'] | Select-Object -First 1)
-        Write-Host "Platform artifact size: $([math]::Round($totalSize / 1MB)) MB"
+        # Use absolute path via RUNNER_TEMP to avoid BcContainerHelper path-doubling bug on Linux
+        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder (Join-Path $env:RUNNER_TEMP "bc-compiler-cache")
+        Write-Host "Compiler folder: $compilerFolder"
 
-        $outDir = Join-Path $env:RUNNER_TEMP "dotnetpackages"
-        python3 scripts/download-dotnetpackages.py $platformUrl $totalSize $outDir
-        if ($LASTEXITCODE -ne 0) { throw "dotnet packages download failed (exit $LASTEXITCODE)" }
-
-        $count = (Get-ChildItem $outDir -File).Count
-        Write-Host "dotnetpackages extracted: $count files in $outDir"
-        echo "DOTNET_PATH=$outDir" >> $env:GITHUB_ENV
+        $dotnetPath = Join-Path $compilerFolder "dotnetpackages"
+        if (Test-Path $dotnetPath) {
+          $count = (Get-ChildItem $dotnetPath -File).Count
+          Write-Host "dotnetpackages: $dotnetPath ($count files)"
+        } else {
+          Write-Host "WARNING: dotnetpackages not found at $dotnetPath"
+          Get-ChildItem $compilerFolder | Select-Object Name
+        }
+        echo "DOTNET_PATH=$dotnetPath" >> $env:GITHUB_ENV
 
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
         echo "DOTNET_DL_DURATION=$dur" >> $env:GITHUB_ENV
-        Write-Host "Dotnet packages download took: $dur seconds"
+        Write-Host "Compiler folder setup took: $dur seconds"
 
     - name: Compile AL extension
       shell: powershell
