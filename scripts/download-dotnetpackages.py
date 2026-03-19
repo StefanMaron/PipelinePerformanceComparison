@@ -3,7 +3,7 @@
 Download files from a BC artifact ZIP using HTTP Range requests.
 
 Usage:
-  python3 download-dotnetpackages.py <artifact_url> <total_size> <output_dir> [mode]
+  python3 download-dotnetpackages.py <artifact_url> <total_size> <output_dir> <mode> [<output_dir2> <mode2> ...]
 
 Modes:
   dotnetpackages  (default) - Extract *.dotnetpackage XML files from the
@@ -14,6 +14,12 @@ Modes:
                               artifact (testframework/, */Test/ folders).  These
                               are the pre-compiled apps needed for -includeTestToolkit
                               -includeTestLibrariesOnly equivalent on Linux.
+  mock-assemblies           - Extract mock test DLLs from Test Assemblies/Mock
+                              Assemblies/ in the platform artifact.
+
+Multiple mode+output pairs can be specified to extract several categories in
+one pass (single central-directory parse, single bulk range download):
+  python3 download-dotnetpackages.py <url> <size> svc service-dlls tk test-toolkit mock mock-assemblies
 
 The artifact_url and total_size are obtained beforehand (e.g. via
 Get-BCArtifactUrl + a HEAD request in PowerShell) so this script works
@@ -80,8 +86,8 @@ def parse_central_directory(data, cd_start, entry_count):
 def is_managed_assembly(data):
     """Return True if the bytes represent a managed .NET PE assembly.
 
-    Checks PE header → optional header → data directory #14 (CLR Runtime Header).
-    A non-zero RVA in that slot means the PE has a CLR header → managed code.
+    Checks PE header -> optional header -> data directory #14 (CLR Runtime Header).
+    A non-zero RVA in that slot means the PE has a CLR header -> managed code.
     This is the same check .NET's PEReader uses and is more reliable than BSJB scanning.
     """
     if len(data) < 64:
@@ -178,24 +184,113 @@ def find_matching_entries(entries, mode):
         return [e for e in entries if 'dotnetpackages/' in e['name'].lower() and e['comp_size'] > 0]
 
 
+def resolve_output_path(entry, mode, output_dir):
+    """Determine the output file path for an entry based on its mode."""
+    basename = os.path.basename(entry['name'])
+    if mode in ('service-dlls', 'bc-managed-dlls'):
+        # Preserve directory structure relative to Service/
+        name_lower = entry['name'].lower()
+        service_idx = name_lower.find('/service/')
+        if service_idx >= 0:
+            rel_path = entry['name'][service_idx + len('/service/'):]
+        else:
+            rel_path = basename
+        return os.path.join(output_dir, rel_path)
+    else:
+        return os.path.join(output_dir, basename)
+
+
+def extract_entries(data, first_offset, tagged_entries):
+    """Extract tagged entries from the downloaded data buffer.
+
+    tagged_entries: list of (entry, mode, output_dir) tuples.
+    Returns (extracted_count, total_bytes).
+    """
+    extracted = 0
+    total_bytes = 0
+
+    for entry, mode, output_dir in tagged_entries:
+        name = entry['name']
+        basename = os.path.basename(name)
+        if not basename:
+            continue  # directory entry
+
+        pos = entry['offset'] - first_offset
+        if pos < 0 or pos + 30 > len(data):
+            print(f"  WARNING: {basename} outside range, skipping")
+            continue
+
+        if data[pos:pos+4] != b'\x50\x4b\x03\x04':
+            print(f"  WARNING: Invalid local header for {basename}, skipping")
+            continue
+
+        name_len   = struct.unpack_from('<H', data, pos + 26)[0]
+        extra_len  = struct.unpack_from('<H', data, pos + 28)[0]
+        data_start = pos + 30 + name_len + extra_len
+
+        if data_start + entry['comp_size'] > len(data):
+            print(f"  WARNING: {basename} extends beyond range, skipping")
+            continue
+
+        comp_data = data[data_start:data_start + entry['comp_size']]
+
+        if entry['comp_method'] == 0:    # stored
+            file_data = comp_data
+        elif entry['comp_method'] == 8:  # deflated
+            try:
+                file_data = zlib.decompress(comp_data, -15)
+            except zlib.error as e:
+                print(f"  WARNING: Decompression failed for {basename}: {e}")
+                continue
+        else:
+            print(f"  WARNING: Unsupported compression {entry['comp_method']} for {basename}, skipping")
+            continue
+
+        out_path = resolve_output_path(entry, mode, output_dir)
+        out_subdir = os.path.dirname(out_path)
+        if out_subdir and not os.path.exists(out_subdir):
+            os.makedirs(out_subdir, exist_ok=True)
+
+        with open(out_path, 'wb') as f:
+            f.write(file_data)
+        extracted   += 1
+        total_bytes += len(file_data)
+        if extracted <= 5 or extracted % 100 == 0:
+            print(f"  {basename}  ({len(file_data):,} B)")
+
+    return extracted, total_bytes
+
+
 def main():
-    if len(sys.argv) < 4 or len(sys.argv) > 5:
-        print("Usage: download-dotnetpackages.py <artifact_url> <total_size> <output_dir> [mode]")
+    if len(sys.argv) < 4:
+        print("Usage: download-dotnetpackages.py <artifact_url> <total_size> <output_dir> [mode] [<output_dir2> <mode2> ...]")
         print("  mode: dotnetpackages (default) | service-dlls | bc-managed-dlls | test-toolkit | mock-assemblies")
+        print("  Multiple mode+output pairs share a single central-directory parse and bulk download.")
         sys.exit(1)
 
     url        = sys.argv[1]
     total_size = int(sys.argv[2])
-    output_dir = sys.argv[3]
-    mode       = sys.argv[4] if len(sys.argv) == 5 else 'dotnetpackages'
+
+    # Parse mode+output pairs: args 3..N as (output_dir, mode) pairs
+    remaining = sys.argv[3:]
+    targets = []
+    i = 0
+    while i < len(remaining):
+        out_dir = remaining[i]
+        mode = remaining[i + 1] if i + 1 < len(remaining) else 'dotnetpackages'
+        targets.append((out_dir, mode))
+        i += 2
 
     print(f"Artifact  : {url}")
     print(f"Size      : {total_size:,} bytes ({total_size / 1024 / 1024:.0f} MB)")
-    print(f"Output    : {output_dir}")
-    print(f"Mode      : {mode}")
+    print(f"Targets   : {len(targets)}")
+    for out_dir, mode in targets:
+        print(f"  {mode} -> {out_dir}")
     print()
 
-    os.makedirs(output_dir, exist_ok=True)
+    for out_dir, _ in targets:
+        os.makedirs(out_dir, exist_ok=True)
+
     tmp_dir = tempfile.mkdtemp(prefix='dotnetpkg-dl-')
 
     try:
@@ -237,19 +332,31 @@ def main():
         tops = sorted({e['name'].split('/')[0] for e in entries if '/' in e['name']})
         print(f"Top-level folders: {tops[:20]}")
 
-        # Step 3: Find entries matching mode
-        matching = find_matching_entries(entries, mode)
-        print(f"Matching entries ({mode}): {len(matching)} files")
+        # Step 3: Find matching entries for ALL modes, tagged with their output dir
+        all_tagged = []  # list of (entry, mode, output_dir)
+        for out_dir, mode in targets:
+            matching = find_matching_entries(entries, mode)
+            print(f"Matching entries ({mode}): {len(matching)} files")
+            if not matching:
+                second_level = sorted({'/'.join(e['name'].split('/')[:2]) for e in entries if '/' in e['name']})
+                print(f"Second-level paths (sample): {second_level[:30]}")
+                print(f"ERROR: No entries found for mode '{mode}'")
+                sys.exit(1)
+            for e in matching:
+                all_tagged.append((e, mode, out_dir))
 
-        if not matching:
-            second_level = sorted({'/'.join(e['name'].split('/')[:2]) for e in entries if '/' in e['name']})
-            print(f"Second-level paths (sample): {second_level[:30]}")
-            print(f"ERROR: No entries found for mode '{mode}'")
-            sys.exit(1)
+        # Deduplicate entries by offset (same file might match multiple modes)
+        seen_offsets = set()
+        unique_entries = []
+        for entry, mode, out_dir in all_tagged:
+            key = entry['offset']
+            if key not in seen_offsets:
+                seen_offsets.add(key)
+                unique_entries.append(entry)
 
-        # Step 4: Calculate the byte range that covers all matching entries
-        first_offset = min(e['offset'] for e in matching)
-        max_offset   = max(e['offset'] for e in matching)
+        # Step 4: Calculate the byte range that covers ALL matching entries across all modes
+        first_offset = min(e['offset'] for e in unique_entries)
+        max_offset   = max(e['offset'] for e in unique_entries)
 
         # Include non-matching entries that fall within the range (may be interleaved)
         all_in_range = sorted(
@@ -269,7 +376,7 @@ def main():
             sys.exit(1)
 
         savings = round((1 - download_size / total_size) * 100)
-        print(f"Downloading range {first_offset}-{range_end} ({download_size // 1048576} MB, {savings}% savings vs full download)")
+        print(f"\nDownloading range {first_offset}-{range_end} ({download_size // 1048576} MB, {savings}% savings vs full download)")
 
         # Step 5: Download the range as one bulk request
         range_file = os.path.join(tmp_dir, 'range.bin')
@@ -281,78 +388,17 @@ def main():
         print(f"Downloaded {len(data):,} bytes")
         print()
 
-        # Step 6: Extract all matching files from the range buffer (flat into output_dir)
-        extracted       = 0
-        total_bytes     = 0
-        skipped_native  = 0
-        skipped_runtime = 0
-        for entry in matching:
-            name     = entry['name']
-            basename = os.path.basename(name)
-            if not basename:
-                continue  # directory entry
-
-            pos = entry['offset'] - first_offset
-            if pos < 0 or pos + 30 > len(data):
-                print(f"  WARNING: {basename} outside range, skipping")
-                continue
-
-            if data[pos:pos+4] != b'\x50\x4b\x03\x04':
-                print(f"  WARNING: Invalid local header for {basename}, skipping")
-                continue
-
-            name_len   = struct.unpack_from('<H', data, pos + 26)[0]
-            extra_len  = struct.unpack_from('<H', data, pos + 28)[0]
-            data_start = pos + 30 + name_len + extra_len
-
-            if data_start + entry['comp_size'] > len(data):
-                print(f"  WARNING: {basename} extends beyond range, skipping")
-                continue
-
-            comp_data = data[data_start:data_start + entry['comp_size']]
-
-            if entry['comp_method'] == 0:    # stored
-                file_data = comp_data
-            elif entry['comp_method'] == 8:  # deflated
-                try:
-                    file_data = zlib.decompress(comp_data, -15)
-                except zlib.error as e:
-                    print(f"  WARNING: Decompression failed for {basename}: {e}")
-                    continue
-            else:
-                print(f"  WARNING: Unsupported compression {entry['comp_method']} for {basename}, skipping")
-                continue
-
-            # Determine output path based on mode
-            if mode in ('service-dlls', 'bc-managed-dlls'):
-                # Preserve directory structure relative to Service/ — matches BcContainerHelper behavior.
-                # BcContainerHelper copies DLLs with -Recurse preserving subdirs under Service/.
-                name_lower = entry['name'].lower()
-                service_idx = name_lower.find('/service/')
-                if service_idx >= 0:
-                    rel_path = entry['name'][service_idx + len('/service/'):]
-                else:
-                    rel_path = basename
-                out_path = os.path.join(output_dir, rel_path)
-                # Create subdirectory if needed
-                out_subdir = os.path.dirname(out_path)
-                if out_subdir and not os.path.exists(out_subdir):
-                    os.makedirs(out_subdir, exist_ok=True)
-            else:
-                out_path = os.path.join(output_dir, basename)
-            with open(out_path, 'wb') as f:
-                f.write(file_data)
-            extracted   += 1
-            total_bytes += len(file_data)
-            if extracted <= 5 or extracted % 100 == 0:
-                print(f"  {basename}  ({len(file_data):,} B)")
+        # Step 6: Extract all matching files from the range buffer
+        extracted, total_bytes = extract_entries(data, first_offset, all_tagged)
 
         print()
         print(f"Extracted : {extracted} files  ({total_bytes // 1024} KB)")
-        if skipped_runtime > 0:
-            print(f"Skipped   : {skipped_runtime} runtime DLLs (System.*, etc.)")
-        if skipped_native > 0:
-            print(f"Skipped   : {skipped_native} native (non-managed) DLLs")
+
+        # Per-mode summary
+        for out_dir, mode in targets:
+            mode_count = sum(1 for _, m, _ in all_tagged if m == mode)
+            dir_count = len([f for f in os.listdir(out_dir)]) if os.path.isdir(out_dir) else 0
+            print(f"  {mode}: {dir_count} files in {out_dir}")
 
         if extracted == 0:
             print("ERROR: No files were extracted")

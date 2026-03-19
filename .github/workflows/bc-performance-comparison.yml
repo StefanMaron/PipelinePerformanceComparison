@@ -192,15 +192,18 @@ jobs:
         $totalSize = [long]($head.Headers['Content-Length'] | Select-Object -First 1)
         Write-Host "Platform artifact size: $([math]::Round($totalSize / 1MB)) MB"
 
-        # 4. Download service DLLs via HTTP range request, preserving directory structure.
-        # This replicates what BcContainerHelper's New-BcCompilerFolder does:
-        # Copy-Item -Path $serviceTierFolder -Filter '*.dll' -Destination $dllsPath -Recurse
+        # 4. Download service DLLs, test toolkit symbols, and mock assemblies in ONE pass.
+        # Single EOCD parse + single HTTP range request for all three categories.
         $dllsBase = Join-Path $env:RUNNER_TEMP "dlls"
         $servicePath = Join-Path $dllsBase "Service"
+        $ttAppsPath = Join-Path $env:GITHUB_WORKSPACE "test-toolkit-apps"
+        $mockPath = Join-Path $env:GITHUB_WORKSPACE "mock-assemblies"
         New-Item -ItemType Directory -Path $servicePath -Force | Out-Null
+        New-Item -ItemType Directory -Path $ttAppsPath -Force | Out-Null
+        New-Item -ItemType Directory -Path $mockPath -Force | Out-Null
         $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts" "download-dotnetpackages.py"
-        Write-Host "Running range download (service-dlls mode, preserving tree): $scriptPath"
-        $result = & python3 $scriptPath $platformUrl $totalSize $servicePath service-dlls 2>&1
+        Write-Host "Running combined range download (service-dlls + test-toolkit + mock-assemblies): $scriptPath"
+        $result = & python3 $scriptPath $platformUrl $totalSize $servicePath service-dlls $ttAppsPath test-toolkit $mockPath mock-assemblies 2>&1
         $result | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) {
           Write-Host "ERROR: Range download failed (exit $LASTEXITCODE)"
@@ -243,9 +246,20 @@ jobs:
         } else { Write-Host "WARNING: No .NET 8 ref pack found at $refPackBase" }
 
         if (Test-Path $servicePath) { $probingPaths += $servicePath }
+        if (Test-Path $mockPath) { $probingPaths += $mockPath }
 
         $serviceCount = (Get-ChildItem $servicePath -Filter "*.dll" -Recurse -EA SilentlyContinue).Count
+        $mockCount = (Get-ChildItem $mockPath -Filter "*.dll" -Recurse -EA SilentlyContinue).Count
         Write-Host "Service DLLs (with subdirs): $serviceCount"
+        Write-Host "Mock assemblies: $mockCount"
+
+        # Copy test toolkit .app files to .alpackages for symbol resolution
+        $ttApps = Get-ChildItem $ttAppsPath -Filter "*.app" -EA SilentlyContinue
+        $alPkgPath = Join-Path $env:GITHUB_WORKSPACE ".alpackages"
+        if ($ttApps) {
+          $ttApps | ForEach-Object { Copy-Item $_.FullName $alPkgPath -Force }
+          Write-Host "Test toolkit symbols ($($ttApps.Count) apps) added to .alpackages"
+        }
 
         if ($probingPaths.Count -gt 0) {
           $combined = $probingPaths -join ','
@@ -259,39 +273,6 @@ jobs:
         $dur = [math]::Round(($(Get-Date) - $start).TotalSeconds, 3)
         echo "DOTNET_DL_DURATION=$dur" >> $env:GITHUB_ENV
         Write-Host "Compiler folder setup took: $dur seconds"
-
-    - name: Download test toolkit symbols for test app compilation
-      if: inputs.compile_target == 'bcapps-system-app' || inputs.compile_target == ''
-      run: |
-        MAJOR_MINOR="26.3"
-        echo "Resolving latest $MAJOR_MINOR artifact version from CDN..."
-        LATEST_VERSION=$(curl -s "${{ env.BC_ARTIFACT_BASE }}?comp=list&restype=container&prefix=${MAJOR_MINOR}.&delimiter=/" 2>/dev/null \
-          | grep -oP '(?<=<Name>)[^<]+(?=/</Name>)' | sort -V | tail -1)
-        if [ -z "$LATEST_VERSION" ]; then
-          echo "ERROR: Could not resolve artifact version for $MAJOR_MINOR"
-          exit 1
-        fi
-        echo "Latest artifact version: $LATEST_VERSION"
-
-        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/$LATEST_VERSION/platform"
-        SIZE=$(curl -sI "$PLATFORM_URL" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\r')
-
-        mkdir -p test-toolkit-apps mock-assemblies
-        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" test-toolkit-apps test-toolkit
-        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" mock-assemblies mock-assemblies
-        cp test-toolkit-apps/*.app .alpackages/ 2>/dev/null || true
-        echo "Test toolkit symbols added to .alpackages:"
-        ls -la test-toolkit-apps/
-        echo "Mock assemblies:"
-        ls -la mock-assemblies/
-
-        # Add mock assemblies to assembly probing paths
-        MOCK_PATH="$(pwd)/mock-assemblies"
-        if [ -n "$DOTNET_PATH" ]; then
-          echo "DOTNET_PATH=$DOTNET_PATH,$MOCK_PATH" >> $GITHUB_ENV
-        else
-          echo "DOTNET_PATH=$MOCK_PATH" >> $GITHUB_ENV
-        fi
 
     - name: Compile AL extension
       env:
@@ -911,17 +892,19 @@ jobs:
         PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/$LATEST_VERSION/platform"
         SIZE=$(curl -sI "$PLATFORM_URL" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\r')
 
-        # Download service DLLs
+        # Download service DLLs, test toolkit apps, and mock assemblies in ONE pass
+        # Single EOCD parse + single HTTP range request for all three categories
         DLLS_BASE="$RUNNER_TEMP/dlls"
         SERVICE_PATH="$DLLS_BASE/Service"
-        mkdir -p "$SERVICE_PATH"
-        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" "$SERVICE_PATH" service-dlls
-
-        # Download mock assemblies (MockTest.dll etc. needed for System Application Test)
+        TT_APPS_PATH="$(pwd)/test-toolkit-apps"
         MOCK_PATH="$(pwd)/mock-assemblies"
-        mkdir -p "$MOCK_PATH"
-        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" "$MOCK_PATH" mock-assemblies
+        mkdir -p "$SERVICE_PATH" "$TT_APPS_PATH" "$MOCK_PATH"
+        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" \
+          "$SERVICE_PATH" service-dlls \
+          "$TT_APPS_PATH" test-toolkit \
+          "$MOCK_PATH" mock-assemblies
         echo "Mock assemblies: $(find "$MOCK_PATH" -name "*.dll" | wc -l) DLLs"
+        echo "Test toolkit apps: $(find "$TT_APPS_PATH" -name "*.app" | wc -l) apps"
 
         # Remove subdirectories that BcContainerHelper removes
         for sub in Management WindowsServiceInstaller SideServices; do
@@ -958,45 +941,12 @@ jobs:
         echo "DOTNET_DL_DURATION=$DOTNET_DL_DURATION" >> $GITHUB_ENV
         echo "Compiler folder setup took: $DOTNET_DL_DURATION seconds"
 
-    - name: Download test toolkit apps from BC artifact
+    - name: Copy test toolkit apps to symbol cache
       run: |
-        STEP_START=$(date +%s.%N)
-
-        # Resolve latest artifact version from the CDN (NuGet symbol versions differ from artifact CDN versions)
-        MAJOR_MINOR="26.3"
-        echo "Resolving latest $MAJOR_MINOR artifact version from CDN..."
-        LATEST_VERSION=$(curl -s "${{ env.BC_ARTIFACT_BASE }}?comp=list&restype=container&prefix=${MAJOR_MINOR}.&delimiter=/" 2>/dev/null \
-          | grep -oP '(?<=<Name>)[^<]+(?=/</Name>)' | sort -V | tail -1)
-        if [ -z "$LATEST_VERSION" ]; then
-          echo "ERROR: Could not resolve latest artifact version for $MAJOR_MINOR"
-          exit 1
-        fi
-        echo "Latest artifact version: $LATEST_VERSION"
-
-        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/$LATEST_VERSION/platform"
-        echo "Platform artifact URL: $PLATFORM_URL"
-
-        # Get artifact size via HEAD request
-        SIZE=$(curl -sI "$PLATFORM_URL" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\r')
-        if [ -z "$SIZE" ] || [ "$SIZE" = "0" ]; then
-          echo "ERROR: Could not determine platform artifact size"
-          curl -sI "$PLATFORM_URL" 2>&1 | head -10
-          exit 1
-        fi
-        echo "Platform artifact size: $SIZE bytes"
-
-        mkdir -p test-toolkit-apps
-        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" test-toolkit-apps test-toolkit
-
-        echo "Test toolkit apps downloaded:"
+        # Test toolkit apps were already downloaded in the combined range download above
+        echo "Test toolkit apps:"
         ls -la test-toolkit-apps/
-
-        # Also copy to .alpackages so the compiler can resolve test toolkit symbols
         cp test-toolkit-apps/*.app .alpackages/ 2>/dev/null || true
-
-        STEP_END=$(date +%s.%N)
-        TOOLKIT_DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "TOOLKIT_DOWNLOAD_DURATION=$TOOLKIT_DOWNLOAD_DURATION" >> $GITHUB_ENV
 
     - name: Compile AL extension
       env:
