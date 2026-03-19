@@ -220,14 +220,28 @@ jobs:
           Write-Host "OpenXML: $($openXmlDll.Name)"
         }
 
-        # 7. Build probing paths matching BcContainerHelper Linux behavior:
-        #    OpenXML, Service — NO .NET runtime paths on Linux!
-        #    BcContainerHelper only adds shared/ when installed .NET version is too low.
-        #    On modern runners with .NET 8, the compiler's own runtime handles base type
-        #    resolution. Adding .NET runtime paths causes Mono.Cecil circular type
-        #    forwarding → stack overflow (SIGABRT).
+        # 7. Build probing paths: OpenXML, AL tools bundled runtime, Service
+        # BcContainerHelper on Linux doesn't add system .NET runtime paths (causes
+        # Mono.Cecil circular type forwarding → stack overflow). However, the NuGet
+        # AL tools (unlike the VSIX compiler BcContainerHelper uses) need the basic
+        # .NET types to be resolvable. Use the compiler's OWN bundled runtime DLLs
+        # as the probing path — these are compatible with the compiler's Mono.Cecil.
         $probingPaths = @()
         if (Test-Path $openXmlPath) { $probingPaths += $openXmlPath }
+
+        # Find the NuGet AL tools' bundled assembly directory
+        $toolStore = Join-Path $env:HOME ".dotnet/tools/.store"
+        $alcToolDir = Get-ChildItem $toolStore -Directory -Filter "microsoft.dynamics.businesscentral.development.tools.linux" -EA SilentlyContinue | Select-Object -First 1
+        if ($alcToolDir) {
+          $alcDllPath = Get-ChildItem $alcToolDir.FullName -Directory -Recurse -Filter "any" -EA SilentlyContinue |
+            Where-Object { Test-Path (Join-Path $_.FullName "alc.dll") } | Select-Object -First 1
+          if ($alcDllPath) {
+            $probingPaths += $alcDllPath.FullName
+            $alcDllCount = (Get-ChildItem $alcDllPath.FullName -Filter "*.dll" -EA SilentlyContinue).Count
+            Write-Host "AL tools runtime: $($alcDllPath.FullName) ($alcDllCount DLLs)"
+          } else { Write-Host "WARNING: Could not find alc.dll in tool store" }
+        } else { Write-Host "WARNING: Could not find AL tools in .dotnet tool store" }
+
         if (Test-Path $servicePath) { $probingPaths += $servicePath }
 
         $serviceCount = (Get-ChildItem $servicePath -Filter "*.dll" -Recurse -EA SilentlyContinue).Count
