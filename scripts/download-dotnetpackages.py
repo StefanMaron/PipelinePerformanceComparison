@@ -87,14 +87,22 @@ def is_managed_assembly(data):
 def find_matching_entries(entries, mode):
     """Return list of non-empty file entries matching the given mode."""
     if mode == 'service-dlls':
-        # DLL files from ServiceTier/*/Service/ in the platform artifact
-        return [
-            e for e in entries
-            if 'servicetier/' in e['name'].lower()
-            and '/service/' in e['name'].lower()
-            and e['name'].lower().endswith('.dll')
-            and e['comp_size'] > 0
-        ]
+        # DLL files from ServiceTier/*/Service/ in the platform artifact.
+        # Exclude subdirectories that BcContainerHelper removes (their DLLs can
+        # overwrite the primary Service/ DLLs during flat extraction).
+        exclude_subdirs = ('management/', 'sideservices/', 'windowsserviceinstaller/')
+        matching = []
+        for e in entries:
+            name_lower = e['name'].lower()
+            if ('servicetier/' not in name_lower or '/service/' not in name_lower
+                    or not name_lower.endswith('.dll') or e['comp_size'] <= 0):
+                continue
+            # Check: is the DLL inside an excluded subdirectory of Service/?
+            after_service = name_lower.split('/service/')[-1]
+            if any(after_service.startswith(sub) for sub in exclude_subdirs):
+                continue
+            matching.append(e)
+        return matching
     else:
         # dotnetpackages mode: *.dotnetpackage XML files
         return [e for e in entries if 'dotnetpackages/' in e['name'].lower() and e['comp_size'] > 0]

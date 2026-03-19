@@ -202,7 +202,42 @@ jobs:
           $dllOutput = $null
         }
 
-        # 5. Find installed .NET runtime paths (already on runner, zero download)
+        # 5. Download out-of-band .NET assemblies not in the shared runtime
+        # (System.Security.Cryptography.Xml, System.Drawing.Common, etc.)
+        # These are NuGet packages; download and extract the net8.0 DLLs.
+        $nugetBase = "https://api.nuget.org/v3-flatcontainer"
+        $extraDlls = @(
+          @{ Name = "System.Security.Cryptography.Xml";     Version = "8.0.1" },
+          @{ Name = "System.Security.Cryptography.Pkcs";    Version = "8.0.1" },
+          @{ Name = "System.Drawing.Common";                Version = "8.0.0" },
+          @{ Name = "System.DirectoryServices";             Version = "8.0.1" },
+          @{ Name = "System.DirectoryServices.Protocols";   Version = "8.0.1" },
+          @{ Name = "System.Runtime.Caching";               Version = "8.0.1" }
+        )
+        foreach ($pkg in $extraDlls) {
+          $pkgLower = $pkg.Name.ToLower()
+          $url = "$nugetBase/$pkgLower/$($pkg.Version)/$pkgLower.$($pkg.Version).nupkg"
+          $tmpPkg = Join-Path $env:RUNNER_TEMP "$pkgLower.nupkg"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $tmpPkg -UseBasicParsing -ErrorAction Stop
+            $tmpZip = $tmpPkg -replace '\.nupkg$', '.zip'
+            Copy-Item $tmpPkg $tmpZip
+            $tmpExtract = Join-Path $env:RUNNER_TEMP "nuget-$pkgLower"
+            Expand-Archive -Path $tmpZip -DestinationPath $tmpExtract -Force -ErrorAction SilentlyContinue
+            # Copy net8.0 DLLs (fall back to net6.0 if not found)
+            $netDlls = Get-ChildItem $tmpExtract -Recurse -Filter "*.dll" |
+              Where-Object { $_.FullName -match 'lib[\\/]net[68]' } | Select-Object -First 1
+            if ($netDlls) {
+              $dllDir = Split-Path $netDlls.FullName
+              Copy-Item "$dllDir/*.dll" $dllOutput -Force -ErrorAction SilentlyContinue
+              Write-Host "  $($pkg.Name): copied from $dllDir"
+            }
+            Remove-Item $tmpPkg, $tmpZip -Force -ErrorAction SilentlyContinue
+            Remove-Item $tmpExtract -Recurse -Force -ErrorAction SilentlyContinue
+          } catch { Write-Host "  WARNING: Failed to download $($pkg.Name): $_" }
+        }
+
+        # 6. Find installed .NET runtime paths (already on runner, zero download)
         # Needed for standard assemblies: netstandard, System.Core, etc.
         # IMPORTANT: Exclude .NET 9 and 10 - they crash the AL compiler (same fix as BcContainerHelper v6.1.11)
         $runtimePaths = @()
@@ -224,7 +259,7 @@ jobs:
           }
         } catch { Write-Host "Could not enumerate .NET runtimes: $_" }
 
-        # 6. Build combined probing paths
+        # 7. Build combined probing paths
         $allPaths = @()
         if ($dllOutput -and (Test-Path $dllOutput)) {
           $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
@@ -490,7 +525,39 @@ jobs:
           $dllOutput = $null
         }
 
-        # 5. Find .NET runtime paths for standard assemblies (netstandard, System.Core, etc.)
+        # 5. Download out-of-band .NET assemblies not in the shared runtime
+        $nugetBase = "https://api.nuget.org/v3-flatcontainer"
+        $extraDlls = @(
+          @{ Name = "System.Security.Cryptography.Xml";     Version = "8.0.1" },
+          @{ Name = "System.Security.Cryptography.Pkcs";    Version = "8.0.1" },
+          @{ Name = "System.Drawing.Common";                Version = "8.0.0" },
+          @{ Name = "System.DirectoryServices";             Version = "8.0.1" },
+          @{ Name = "System.DirectoryServices.Protocols";   Version = "8.0.1" },
+          @{ Name = "System.Runtime.Caching";               Version = "8.0.1" }
+        )
+        foreach ($pkg in $extraDlls) {
+          $pkgLower = $pkg.Name.ToLower()
+          $url = "$nugetBase/$pkgLower/$($pkg.Version)/$pkgLower.$($pkg.Version).nupkg"
+          $tmpPkg = Join-Path $env:RUNNER_TEMP "$pkgLower.nupkg"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $tmpPkg -UseBasicParsing -ErrorAction Stop
+            $tmpZip = $tmpPkg -replace '\.nupkg$', '.zip'
+            Copy-Item $tmpPkg $tmpZip
+            $tmpExtract = Join-Path $env:RUNNER_TEMP "nuget-$pkgLower"
+            Expand-Archive -Path $tmpZip -DestinationPath $tmpExtract -Force -ErrorAction SilentlyContinue
+            $netDlls = Get-ChildItem $tmpExtract -Recurse -Filter "*.dll" |
+              Where-Object { $_.FullName -match 'lib[\\/]net[68]' } | Select-Object -First 1
+            if ($netDlls) {
+              $dllDir = Split-Path $netDlls.FullName
+              Copy-Item (Join-Path $dllDir "*.dll") $dllOutput -Force -ErrorAction SilentlyContinue
+              Write-Host "  $($pkg.Name): copied from $dllDir"
+            }
+            Remove-Item $tmpPkg, $tmpZip -Force -ErrorAction SilentlyContinue
+            Remove-Item $tmpExtract -Recurse -Force -ErrorAction SilentlyContinue
+          } catch { Write-Host "  WARNING: Failed to download $($pkg.Name): $_" }
+        }
+
+        # 6. Find .NET runtime paths for standard assemblies (netstandard, System.Core, etc.)
         # Exclude .NET 9/10 - same fix as BcContainerHelper v6.1.11 (they crash the AL compiler)
         $runtimePaths = @()
         try {
@@ -510,7 +577,7 @@ jobs:
           }
         } catch { Write-Host "Could not enumerate .NET runtimes: $_" }
 
-        # 6. Build combined probing paths
+        # 7. Build combined probing paths
         $allPaths = @()
         if ($dllOutput -and (Test-Path $dllOutput)) {
           $dllCount = (Get-ChildItem $dllOutput -Filter "*.dll" -ErrorAction SilentlyContinue).Count
