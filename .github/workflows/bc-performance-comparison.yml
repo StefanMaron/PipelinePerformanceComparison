@@ -176,11 +176,11 @@ jobs:
         Install-Module -Name BcContainerHelper -Force -AllowClobber -Scope CurrentUser | Out-Null
         Import-Module BcContainerHelper -Force -DisableNameChecking
 
-        # Use latest BC 26 — dotnet packages are compatible across minor versions
+        # Use latest BC 26 - dotnet packages are compatible across minor versions
         # Avoid pinning exact version: artifact index may not contain every build
         $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
         Write-Host "Artifact URL: $artifactUrl"
-        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty — no BC 26 sandbox artifact found" }
+        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
 
         $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder "bc-compiler-cache"
         Write-Host "Compiler folder: $compilerFolder"
@@ -417,11 +417,11 @@ jobs:
         Import-Module BcContainerHelper -Force -DisableNameChecking
         $start = Get-Date
 
-        # Get artifact URL for BC 26 — dotnet packages are compatible across minor versions.
+        # Get artifact URL for BC 26 - dotnet packages are compatible across minor versions.
         # Avoid pinning exact version: artifact index may not contain every build.
         $artifactUrl = Get-BCArtifactUrl -type Sandbox -version "26" -country w1 -select Latest
         Write-Host "Artifact URL: $artifactUrl"
-        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty — no BC 26 sandbox artifact found" }
+        if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
 
         $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder "bc-compiler-cache"
         echo "BC_COMPILER_FOLDER=$compilerFolder" >> $env:GITHUB_ENV
