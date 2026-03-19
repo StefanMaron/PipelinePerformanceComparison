@@ -816,6 +816,23 @@ jobs:
              -F "file=@$APP_FILE" \
              "http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
 
+    - name: Wait for OData API readiness
+      run: |
+        echo "Waiting for BC OData API to be ready..."
+        for i in $(seq 1 60); do
+          RESP=$(curl -s -o /dev/null -w "%{http_code}" -u "admin:Admin123!" \
+            "http://localhost:7048/BC/api/v2.0/companies" 2>/dev/null || echo "000")
+          if [ "$RESP" = "200" ]; then
+            echo "OData API ready after $((i * 5))s"
+            break
+          fi
+          echo "  Attempt $i: HTTP $RESP (waiting 5s...)"
+          sleep 5
+        done
+        if [ "$RESP" != "200" ]; then
+          echo "WARNING: OData API not returning 200 after 5 minutes, proceeding anyway"
+        fi
+
     - name: Run AL tests via OData API
       run: |
         STEP_START=$(date +%s.%N)
