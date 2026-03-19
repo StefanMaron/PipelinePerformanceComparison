@@ -182,7 +182,8 @@ jobs:
         Write-Host "Artifact URL: $artifactUrl"
         if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
 
-        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder "bc-compiler-cache"
+        # Use absolute path to avoid BcContainerHelper path-doubling bug on Linux with relative paths
+        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder (Join-Path $env:RUNNER_TEMP "bc-compiler-cache")
         Write-Host "Compiler folder: $compilerFolder"
 
         $dotnetPath = Join-Path $compilerFolder "dotnetpackages"
@@ -423,7 +424,8 @@ jobs:
         Write-Host "Artifact URL: $artifactUrl"
         if (-not $artifactUrl) { throw "Get-BCArtifactUrl returned empty - no BC 26 sandbox artifact found" }
 
-        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder "bc-compiler-cache"
+        # Use absolute path to avoid BcContainerHelper path-doubling bug on Linux with relative paths
+        $compilerFolder = New-BcCompilerFolder -artifactUrl $artifactUrl -cacheFolder (Join-Path $env:RUNNER_TEMP "bc-compiler-cache")
         echo "BC_COMPILER_FOLDER=$compilerFolder" >> $env:GITHUB_ENV
         Write-Host "Compiler folder: $compilerFolder"
 
