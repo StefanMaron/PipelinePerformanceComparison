@@ -211,7 +211,9 @@ jobs:
           @{ Name = "System.Security.Cryptography.Pkcs";    Version = "8.0.1" },
           @{ Name = "System.Drawing.Common";                Version = "8.0.0" },
           @{ Name = "System.DirectoryServices.Protocols";   Version = "8.0.1" },
-          @{ Name = "System.Runtime.Caching";               Version = "8.0.1" }
+          @{ Name = "System.Runtime.Caching";               Version = "8.0.1" },
+          @{ Name = "System.IdentityModel.Tokens.Jwt";      Version = "8.0.2" },
+          @{ Name = "System.ServiceModel.Primitives";        Version = "8.0.0" }
         )
         foreach ($pkg in $extraDlls) {
           $pkgLower = $pkg.Name.ToLower()
@@ -296,9 +298,12 @@ jobs:
           EXTRA_ARGS="/assemblyProbingPaths:$DOTNET_PATH"
         fi
         echo "Running: AL compile /project:\"$PROJECT_PATH\" /packagecachepath:\"$SYMBOLS_PATH\" $EXTRA_ARGS"
-        echo "DLL count in probing path: $(ls -1 $DOTNET_PATH/*.dll 2>/dev/null | wc -l)"
-        echo "Sample DLLs:"
-        ls $DOTNET_PATH/*.dll 2>/dev/null | head -20
+        echo "Probing paths: $DOTNET_PATH"
+        IFS=';' read -ra PATHS <<< "$DOTNET_PATH"
+        for p in "${PATHS[@]}"; do
+          count=$(ls -1 "$p"/*.dll 2>/dev/null | wc -l)
+          echo "  $p: $count DLLs"
+        done
         # Capture full output including stderr to diagnose crashes (exit 134 = unhandled .NET exception)
         set +e
         AL compile /project:"$PROJECT_PATH" /packagecachepath:"$SYMBOLS_PATH" $EXTRA_ARGS 2>&1
