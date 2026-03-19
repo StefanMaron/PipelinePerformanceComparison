@@ -132,14 +132,22 @@ def main():
         print(f"Top-level folders: {tops[:20]}")
         print()
 
-        # Step 3: Filter to dotnetpackages/ entries with actual data
-        matching = [e for e in entries if e['name'].startswith(prefix) and e['comp_size'] > 0]
-        print(f"Matching '{prefix}': {len(matching)} files")
+        # Step 3: Find dotnetpackages/ entries — search anywhere in the path
+        # (artifact structure varies across BC versions; the folder may be nested)
+        matching = [e for e in entries if 'dotnetpackages/' in e['name'] and e['comp_size'] > 0]
+        print(f"Entries containing 'dotnetpackages/': {len(matching)} files")
 
         if not matching:
-            print(f"ERROR: No dotnetpackages entries found.")
-            print("Check top-level folders above for the correct prefix.")
+            print(f"ERROR: No dotnetpackages entries found anywhere in the archive.")
+            print("Top-level folders above should help identify the correct location.")
             sys.exit(1)
+
+        # Determine the archive prefix (everything up to and including 'dotnetpackages/')
+        # Files are extracted flat (basename only) into output_dir
+        sample = matching[0]['name']
+        pkg_start = sample.index('dotnetpackages/')
+        strip_prefix = sample[:pkg_start + len('dotnetpackages/')]
+        print(f"Found dotnetpackages at archive path: '{strip_prefix}'")
 
         # Step 4: Calculate the byte range that covers all matching entries
         first_offset = min(e['offset'] for e in matching)
