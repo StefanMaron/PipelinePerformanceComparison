@@ -1157,12 +1157,17 @@ jobs:
         PUBLISH_URL="http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
 
         # Publish in dependency order (topological sort)
+        # Apps 1-5: no deps or deps on earlier items
+        # App 6: Business Foundation Test Libraries depends on System Application + Business Foundation (both pre-installed)
+        # App 7: System Application Test Library depends on System Application (pre-installed) + Any
+        # App 8: Tests-TestLibraries depends on System Application Test Library + Library Variable Storage + Permissions Mock + Business Foundation Test Libraries
         TOOLKIT_APPS=(
           "Microsoft_Any.app"
           "Microsoft_Library Assert.app"
           "Microsoft_Library Variable Storage.app"
           "Microsoft_Test Runner.app"
           "Microsoft_Permissions Mock.app"
+          "Microsoft_Business Foundation Test Libraries.app"
           "Microsoft_System Application Test Library.app"
           "Microsoft_Tests-TestLibraries.app"
         )
