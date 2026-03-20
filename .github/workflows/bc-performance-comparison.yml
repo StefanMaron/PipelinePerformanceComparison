@@ -885,11 +885,8 @@ jobs:
       run: |
         STEP_START=$(date +%s.%N)
 
-        # Resolve platform artifact URL from CDN
-        MAJOR_MINOR="26.3"
-        LATEST_VERSION=$(curl -s "${{ env.BC_ARTIFACT_BASE }}?comp=list&restype=container&prefix=${MAJOR_MINOR}.&delimiter=/" 2>/dev/null \
-          | grep -oP '(?<=<Name>)[^<]+(?=/</Name>)' | sort -V | tail -1)
-        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/$LATEST_VERSION/platform"
+        # Use the same BC artifact version as the container to avoid version mismatches
+        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/platform"
         SIZE=$(curl -sI "$PLATFORM_URL" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\r')
 
         # Download service DLLs, test toolkit apps, and mock assemblies in ONE pass
