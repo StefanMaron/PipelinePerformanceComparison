@@ -1150,6 +1150,78 @@ jobs:
         docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$SERVICE_CONFIG" 2>&1 | head -1
         cd ..
 
+    - name: Replace pre-installed System Application
+      if: inputs.compile_target == 'bcapps-system-app'
+      run: |
+        STEP_START=$(date +%s.%N)
+        cd bcdev-temp
+        BC_CONTAINER=$(docker compose ps -q bc)
+        SERVICE_CONFIG="/root/.local/share/wineprefixes/bc1/drive_c/Program Files/Microsoft Dynamics NAV/260/Service/CustomSettings.config"
+        HOME_CONFIG="/home/CustomSettings.config"
+
+        # Clear NonRemovableExtensions in both config files
+        # (Uninstall-NAVApp -Force bypasses it, but clear to be safe)
+        echo "Clearing NonRemovableExtensions setting..."
+        docker exec "$BC_CONTAINER" sed -i 's/key="NonRemovableExtensions" value="[^"]*"/key="NonRemovableExtensions" value=""/' "$SERVICE_CONFIG" || true
+        docker exec "$BC_CONTAINER" sed -i 's/key="NonRemovableExtensions" value="[^"]*"/key="NonRemovableExtensions" value=""/' "$HOME_CONFIG" || true
+
+        # Find compiled System Application .app
+        SYSAPP_FILE=$(find ../bcapps-temp/src/System\ Application/App -maxdepth 1 -name "*.app" 2>/dev/null | head -1)
+        if [ -z "$SYSAPP_FILE" ]; then
+          SYSAPP_FILE=$(find .. -maxdepth 1 -name "*System*Application*.app" -not -name "*Test*" 2>/dev/null | head -1)
+        fi
+        if [ -z "$SYSAPP_FILE" ]; then
+          echo "ERROR: compiled System Application .app not found"
+          exit 1
+        fi
+        echo "Copying System Application to container: $SYSAPP_FILE"
+        docker cp "$SYSAPP_FILE" "$BC_CONTAINER:/tmp/sysapp.app"
+
+        docker exec "$BC_CONTAINER" pwsh -Command "
+          \$ErrorActionPreference = 'Stop'
+          \$svcPath = '/root/.local/share/wineprefixes/bc1/drive_c/Program Files/Microsoft Dynamics NAV/260/Service'
+          Import-Module \"\$svcPath/Microsoft.Dynamics.Nav.Apps.Management.psd1\" -Force
+
+          Write-Host 'Pre-installed extensions:'
+          Get-NAVAppInfo -ServerInstance BC | ForEach-Object {
+            Write-Host \"  \$(\$_.Name) v\$(\$_.Version)\"
+          }
+
+          # Uninstall all extensions
+          Write-Host 'Uninstalling all extensions...'
+          Get-NAVAppInfo -ServerInstance BC | ForEach-Object {
+            Uninstall-NAVApp -ServerInstance BC -Name \$_.Name -Version \$_.Version -Force -ErrorAction SilentlyContinue
+          }
+
+          # Unpublish all extensions (multiple passes for dependency ordering)
+          Write-Host 'Unpublishing all extensions...'
+          for (\$i = 0; \$i -lt 5; \$i++) {
+            \$remaining = @(Get-NAVAppInfo -ServerInstance BC)
+            if (\$remaining.Count -eq 0) { Write-Host '  All unpublished'; break }
+            foreach (\$app in \$remaining) {
+              Unpublish-NAVApp -ServerInstance BC -Name \$app.Name -Version \$app.Version -ErrorAction SilentlyContinue
+            }
+            Write-Host \"  Pass \$(\$i+1): \$(\$remaining.Count) remaining\"
+          }
+
+          # Publish our compiled System Application at Global scope
+          Write-Host 'Publishing compiled System Application at Global scope...'
+          Publish-NAVApp -ServerInstance BC -Path '/tmp/sysapp.app' -SkipVerification -Scope Global
+          Sync-NAVApp -ServerInstance BC -Name 'System Application' -Mode ForceSync
+          Install-NAVApp -ServerInstance BC -Name 'System Application' -Force
+
+          Write-Host 'System Application replaced. Current extensions:'
+          Get-NAVAppInfo -ServerInstance BC | ForEach-Object {
+            Write-Host \"  \$(\$_.Name) v\$(\$_.Version)\"
+          }
+        "
+
+        STEP_END=$(date +%s.%N)
+        SYSAPP_REPLACE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "SYSAPP_REPLACE_DURATION=$SYSAPP_REPLACE_DURATION" >> $GITHUB_ENV
+        echo "System Application replacement took: $SYSAPP_REPLACE_DURATION seconds"
+        cd ..
+
     - name: Publish test toolkit apps to BC container
       run: |
         set +e  # Don't fail on individual publish errors
@@ -1158,8 +1230,8 @@ jobs:
 
         # Publish in dependency order (topological sort)
         # Apps 1-5: no deps or deps on earlier items
-        # App 6: Business Foundation Test Libraries depends on System Application + Business Foundation (both pre-installed)
-        # App 7: System Application Test Library depends on System Application (pre-installed) + Any
+        # App 6: Business Foundation Test Libraries depends on System Application + Business Foundation (may fail if Business Foundation not available)
+        # App 7: System Application Test Library depends on System Application + Any
         # App 8: Tests-TestLibraries depends on System Application Test Library + Library Variable Storage + Permissions Mock + Business Foundation Test Libraries
         TOOLKIT_APPS=(
           "Microsoft_Any.app"
@@ -1242,17 +1314,7 @@ jobs:
         }
 
         if [ "$COMPILE_TARGET" = "bcapps-system-app" ]; then
-          # Publish System Application (compiled from source)
-          SYSAPP_FILE=$(find bcapps-temp/src/System\ Application/App -maxdepth 1 -name "*.app" 2>/dev/null | head -1)
-          if [ -z "$SYSAPP_FILE" ]; then
-            SYSAPP_FILE=$(find . -maxdepth 1 -name "*System*Application*.app" -not -name "*Test*" 2>/dev/null | head -1)
-          fi
-          if [ -n "$SYSAPP_FILE" ]; then
-            publish_app "System Application" "$SYSAPP_FILE" || true
-            sleep 5
-          else
-            echo "WARNING: System Application .app not found, skipping"
-          fi
+          # System Application already published at Global scope in earlier step
 
           # Publish System Application Test (compiled from source)
           TESTAPP_FILE=$(find bcapps-temp/src/System\ Application/Test -maxdepth 1 -name "*.app" 2>/dev/null | head -1)
