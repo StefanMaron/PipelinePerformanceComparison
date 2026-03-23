@@ -1,0 +1,370 @@
+name: BCApps System Application Tests (Linux Headless)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bc_version:
+        description: 'BC version (e.g. 27.5.46862.48004)'
+        required: false
+        default: '27.5.46862.48004'
+        type: string
+      description:
+        description: 'Run description (optional)'
+        required: false
+        type: string
+
+env:
+  BC_VERSION: ${{ inputs.bc_version || '27.5.46862.48004' }}
+  PLATFORM_VERSION: '27.0.46760'
+  AL_TOOLS_VERSION: '16.2.28.57946'
+  BCAPPS_BRANCH: 'releases/26.0'
+  BC_ARTIFACT_BASE: 'https://bcartifacts-exdbf9fwegejdqak.b02.azurefd.net/sandbox'
+
+jobs:
+  bcapps-test:
+    runs-on: ubuntu-latest
+    name: BCApps System App Tests
+    timeout-minutes: 45
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Record start time
+      run: echo "START_EPOCH=$(date +%s.%N)" >> $GITHUB_ENV
+
+    - name: Setup .NET and AL tools
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Install AL compiler
+      run: |
+        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools.Linux \
+          --version ${{ env.AL_TOOLS_VERSION }} || true
+        echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+    - name: Clone BCApps and build alDirectCompile
+      run: |
+        STEP_START=$(date +%s.%N)
+
+        # Clone BCApps System Application source
+        echo "Cloning microsoft/BCApps branch ${{ env.BCAPPS_BRANCH }}..."
+        git clone --depth 1 --branch ${{ env.BCAPPS_BRANCH }} --single-branch \
+          https://github.com/microsoft/BCApps bcapps-temp &
+        BCAPPS_PID=$!
+
+        # Build alDirectCompile (Docker image + TestRunner)
+        echo "Cloning alDirectCompile..."
+        git clone --depth 1 https://github.com/StefanMaron/alDirectCompile.git aldirectcompile
+        cd aldirectcompile/StartupHook
+        dotnet publish -c Release -o bin/Release/net8.0/publish 2>&1 | tail -3
+        # Ensure net8.0 unix SqlClient
+        strings bin/Release/net8.0/publish/Microsoft.Data.SqlClient.dll | grep -q "9.0.0.0" && {
+          echo "Fixing SqlClient to net8.0 build"
+          cp ~/.nuget/packages/microsoft.data.sqlclient/6.0.5/runtimes/unix/lib/net8.0/Microsoft.Data.SqlClient.dll bin/Release/net8.0/publish/
+        } || echo "SqlClient OK"
+        cd ../..
+
+        # Save TestRunner.app
+        cp aldirectcompile/TestRunnerExtension/TestRunner.app TestRunner.app
+
+        # Wait for BCApps clone
+        wait $BCAPPS_PID
+        AL_COUNT=$(find bcapps-temp/src/System\ Application/App -name "*.al" 2>/dev/null | wc -l)
+        TEST_COUNT=$(find bcapps-temp/src/System\ Application/Test -name "*.al" 2>/dev/null | wc -l)
+        echo "System Application: $AL_COUNT AL files, Test: $TEST_COUNT AL files"
+
+        STEP_END=$(date +%s.%N)
+        echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Download BC artifacts (on host)
+      run: |
+        STEP_START=$(date +%s.%N)
+        BC_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/w1"
+        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/platform"
+        DEST="$(pwd)/bc-artifacts"
+        mkdir -p "$DEST/app" "$DEST/platform"
+
+        echo "Downloading app artifact..."
+        curl -sSL "$BC_URL" -o "$DEST/bc-app.zip"
+        unzip -qo "$DEST/bc-app.zip" -d "$DEST/app"
+        rm -f "$DEST/bc-app.zip"
+
+        echo "Downloading platform artifact..."
+        curl -sSL "$PLATFORM_URL" -o "$DEST/bc-platform.zip"
+        unzip -qo "$DEST/bc-platform.zip" -d "$DEST/platform"
+        rm -f "$DEST/bc-platform.zip"
+
+        echo "Artifacts: $(du -sh "$DEST" | cut -f1)"
+        STEP_END=$(date +%s.%N)
+        echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Start BC service tier
+      run: |
+        STEP_START=$(date +%s.%N)
+        cd aldirectcompile
+        ARTIFACTS_PATH="$(cd .. && pwd)/bc-artifacts"
+        printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\n" > .env
+
+        docker compose build --no-cache bc
+        docker compose up -d
+
+        # Copy artifacts into container
+        echo "Copying artifacts into container..."
+        docker compose exec bc mkdir -p /bc/artifacts/app /bc/artifacts/platform
+        docker compose cp "$ARTIFACTS_PATH/app/." bc:/bc/artifacts/app/
+        docker compose cp "$ARTIFACTS_PATH/platform/." bc:/bc/artifacts/platform/
+        echo "Artifacts copied."
+
+        echo "Waiting for BC..."
+        for i in $(seq 1 120); do
+          docker compose logs bc 2>&1 | grep -q "Press Enter" && { echo "BC ready after $((i*5))s"; break; }
+          if [ $((i % 6)) -eq 0 ]; then
+            LAST=$(docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[StartupHook\]\|Exception\|ERROR" | tail -1)
+            echo "  $((i*5))s: $LAST"
+          fi
+          if ! docker compose ps bc 2>/dev/null | grep -q "Up"; then
+            echo "ERROR: BC container died — full logs:"
+            docker compose logs bc 2>&1
+            exit 1
+          fi
+          sleep 5
+        done
+        if ! docker compose logs bc 2>&1 | grep -q "Press Enter"; then
+          echo "ERROR: BC did not start — full logs:"
+          docker compose logs bc 2>&1
+          exit 1
+        fi
+        INSTANCE=$(docker compose exec bc grep -oP 'ServerInstance" value="\K[^"]+' /bc/service/CustomSettings.config 2>/dev/null || echo "InstanceName")
+        echo "INSTANCE=$INSTANCE" >> $GITHUB_ENV
+        cd ..
+        STEP_END=$(date +%s.%N)
+        echo "CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Prepare symbols and dependencies
+      run: |
+        STEP_START=$(date +%s.%N)
+        mkdir -p .alpackages mock-assemblies service-dlls
+
+        # Copy all extension .app files as symbols
+        find bc-artifacts/app/Extensions -name "*.app" -exec cp {} .alpackages/ \;
+
+        # Copy System.app from platform
+        SYSTEM_APP=$(find bc-artifacts/platform/ModernDev -name "System.app" 2>/dev/null | head -1)
+        [ -n "$SYSTEM_APP" ] && cp "$SYSTEM_APP" .alpackages/System.app
+
+        # Copy test toolkit .app files
+        find bc-artifacts/platform/applications/testframework -name "*.app" -exec cp {} .alpackages/ \; 2>/dev/null
+        # Copy test libraries from platform apps (BaseApp/Test, etc.)
+        find bc-artifacts/platform/applications -path "*/Test/*.app" -exec cp {} .alpackages/ \; 2>/dev/null
+
+        echo "Symbols: $(ls .alpackages/*.app 2>/dev/null | wc -l) .app files"
+
+        # Copy mock assemblies
+        find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp {} mock-assemblies/ \; 2>/dev/null
+        echo "Mock assemblies: $(ls mock-assemblies/*.dll 2>/dev/null | wc -l) DLLs"
+
+        # Copy service DLLs for assembly probing
+        SVC_DIR=$(find bc-artifacts/platform/ServiceTier -name "Microsoft.Dynamics.Nav.Server.dll" -printf "%h\n" 2>/dev/null | head -1)
+        if [ -n "$SVC_DIR" ]; then
+          cp "$SVC_DIR"/*.dll service-dlls/ 2>/dev/null
+          echo "Service DLLs: $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
+        fi
+
+        # Build assembly probing paths
+        PROBING="$(pwd)/service-dlls,$(pwd)/mock-assemblies"
+        # Add .NET runtime path
+        DOTNET_RT=$(find /usr/share/dotnet/shared/Microsoft.NETCore.App -maxdepth 1 -name "8.*" | sort -V | tail -1)
+        [ -n "$DOTNET_RT" ] && PROBING="$PROBING,$DOTNET_RT"
+        echo "PROBING_PATHS=$PROBING" >> $GITHUB_ENV
+        echo "Assembly probing: $PROBING"
+
+        # Fix backslash paths in BCApps AL files (Linux AL compiler needs forward slashes)
+        FIXED=$(find bcapps-temp/src/System\ Application -name "*.al" -exec grep -l '\\' {} \; 2>/dev/null | wc -l)
+        find bcapps-temp/src/System\ Application -name "*.al" -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
+        echo "Fixed backslash paths in $FIXED .al files"
+
+        STEP_END=$(date +%s.%N)
+        echo "PREPARE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Compile System Application
+      env:
+        DOTNET_ReadyToRun: '0'
+        COMPlus_ReadyToRun: '0'
+      run: |
+        STEP_START=$(date +%s.%N)
+        echo "Compiling System Application..."
+        AL compile \
+          "/project:bcapps-temp/src/System Application/App" \
+          "/packagecachepath:$(pwd)/.alpackages" \
+          "/assemblyProbingPaths:$PROBING_PATHS" \
+          || { echo "ERROR: System Application compilation failed"; exit 1; }
+
+        # Copy compiled app to .alpackages for test compilation
+        find "bcapps-temp/src/System Application/App" -maxdepth 1 -name "*.app" -exec cp {} .alpackages/ \;
+        find "bcapps-temp/src/System Application/App" -maxdepth 1 -name "*.app" -exec cp {} . \;
+        echo "Compiled: $(ls -la bcapps-temp/src/System\ Application/App/*.app 2>/dev/null)"
+
+        STEP_END=$(date +%s.%N)
+        SYSAPP_COMPILE=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "SYSAPP_COMPILE_DURATION=$SYSAPP_COMPILE" >> $GITHUB_ENV
+        echo "System Application compilation: ${SYSAPP_COMPILE}s"
+
+    - name: Compile System Application Test
+      env:
+        DOTNET_ReadyToRun: '0'
+        COMPlus_ReadyToRun: '0'
+      run: |
+        STEP_START=$(date +%s.%N)
+        echo "Compiling System Application Test..."
+        AL compile \
+          "/project:bcapps-temp/src/System Application/Test" \
+          "/packagecachepath:$(pwd)/.alpackages" \
+          "/assemblyProbingPaths:$PROBING_PATHS" \
+          || { echo "ERROR: System Application Test compilation failed"; exit 1; }
+
+        # Extract test extension ID
+        TEST_ID=$(python3 -c "import json; print(json.load(open('bcapps-temp/src/System Application/Test/app.json'))['id'])")
+        echo "SYSAPP_TEST_ID=$TEST_ID" >> $GITHUB_ENV
+        echo "Test extension ID: $TEST_ID"
+
+        find "bcapps-temp/src/System Application/Test" -maxdepth 1 -name "*.app" -exec cp {} . \;
+        echo "Compiled: $(ls -la bcapps-temp/src/System\ Application/Test/*.app 2>/dev/null)"
+
+        STEP_END=$(date +%s.%N)
+        TEST_COMPILE=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "TEST_COMPILE_DURATION=$TEST_COMPILE" >> $GITHUB_ENV
+        echo "System Application Test compilation: ${TEST_COMPILE}s"
+
+    - name: Publish extensions to BC
+      run: |
+        STEP_START=$(date +%s.%N)
+        DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=synchronize"
+        AUTH="admin:Admin123!"
+
+        # Publish TestRunner (provides test API)
+        echo "Publishing TestRunner..."
+        curl -s -o /dev/null -w "  HTTP %{http_code}\n" --max-time 60 \
+          -u "$AUTH" -X POST \
+          -F "file=@TestRunner.app;type=application/octet-stream" "$DEV"
+
+        # Publish compiled System Application
+        SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
+        echo "Publishing System Application: $SYSAPP"
+        curl -s -o /dev/null -w "  HTTP %{http_code}\n" --max-time 120 \
+          -u "$AUTH" -X POST \
+          -F "file=@$SYSAPP;type=application/octet-stream" "$DEV"
+
+        # Publish compiled System Application Test
+        TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" | head -1)
+        echo "Publishing System Application Test: $TESTAPP"
+        curl -s -o /dev/null -w "  HTTP %{http_code}\n" --max-time 120 \
+          -u "$AUTH" -X POST \
+          -F "file=@$TESTAPP;type=application/octet-stream" "$DEV"
+
+        echo "Waiting for extensions to compile in BC..."
+        sleep 30
+
+        STEP_END=$(date +%s.%N)
+        echo "PUBLISH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Run System Application Tests
+      run: |
+        STEP_START=$(date +%s.%N)
+        AUTH="admin:Admin123!"
+        ODATA="http://localhost:7048/$INSTANCE"
+
+        # Get company ID
+        COMPANY_ID=$(curl -s --max-time 10 -u "$AUTH" \
+          "$ODATA/ODataV4/Company" | \
+          python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])")
+        echo "Company ID: $COMPANY_ID"
+
+        # Custom API on port 7052
+        API="http://localhost:7052/custom/automation/v1.0/companies($COMPANY_ID)"
+
+        # Wait for Test Runner API
+        echo "Checking Test Runner API..."
+        for i in $(seq 1 24); do
+          RESP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -u "$AUTH" "$API/codeunitRunRequests" 2>&1)
+          [ "$RESP" = "200" ] && { echo "  API ready"; break; }
+          echo "  Waiting... (HTTP $RESP)"
+          sleep 5
+        done
+
+        # Find test codeunit IDs from the System Application Test
+        # The test runner (Subtype=TestRunner) runs all [Test] functions in a codeunit
+        # We need to find which codeunit IDs are test codeunits in the System App Test
+        # For now, use the test runner to run the entire extension by codeunit ID
+        # The TestRunner codeunit (50003) executes codeunit by ID via RunCodeunit
+
+        # Get all test codeunit IDs from the compiled test app.json
+        echo "Looking for test codeunits..."
+
+        # Try running codeunit 130000+ range (standard System App test IDs)
+        # Actually, use the Test Runner's batch capability
+        # First, list what we can find
+        echo "Running test via TestRunner API..."
+
+        # Create run request — we need to find the actual test codeunit IDs
+        # System Application Test codeunits are typically in the 130000-139999 range
+        # Let's try a few known ones and see what happens
+        CREATE_RESP=$(curl -s --max-time 10 -u "$AUTH" -X POST \
+          -H "Content-Type: application/json" -d '{"CodeunitId": 132439}' \
+          "$API/codeunitRunRequests")
+        RID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Id',''))" 2>/dev/null)
+
+        if [ -n "$RID" ] && [ "$RID" != "" ]; then
+          echo "Run request ID: $RID"
+          echo "Executing tests..."
+          curl -s --max-time 300 -u "$AUTH" -X POST \
+            -H "Content-Type: application/json" \
+            "$API/codeunitRunRequests($RID)/Microsoft.NAV.runCodeunit" > /dev/null
+
+          STATUS=$(curl -s --max-time 10 -u "$AUTH" \
+            "$API/codeunitRunRequests($RID)" | \
+            python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('Status','Unknown'))")
+          echo "Status: $STATUS"
+        else
+          echo "Could not create run request. Testing API directly..."
+          echo "Response: $CREATE_RESP" | head -c 300
+        fi
+
+        # Read log entries
+        curl -s --max-time 10 -u "$AUTH" "$API/logEntries" | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        p=f=0
+        for e in data['value']:
+            fn = e.get('functionName', '')
+            if fn:
+                cu = e.get('codeunitName', '')
+                ok = e.get('success', False)
+                if ok: p+=1; print(f'  ✓ {cu}::{fn}')
+                else:
+                    f+=1
+                    err = e.get('errorMessage', '')[:100]
+                    print(f'  ✗ {cu}::{fn}: {err}')
+        print(f'\nPassed: {p}, Failed: {f}')
+        if p == 0 and f == 0:
+            print('WARNING: No test results found — test codeunit may not exist or test runner not working')
+        "
+
+        STEP_END=$(date +%s.%N)
+        echo "TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Record metrics
+      if: always()
+      run: |
+        TOTAL=$(python3 -c "print(f'{$(date +%s.%N) - ${{ env.START_EPOCH }}:.3f}')")
+        echo "=== Pipeline Timing ==="
+        echo "Setup (clone + build):  ${SETUP_DURATION:-n/a}s"
+        echo "Download artifacts:     ${DOWNLOAD_DURATION:-n/a}s"
+        echo "BC container start:     ${CONTAINER_DURATION:-n/a}s"
+        echo "Prepare symbols:        ${PREPARE_DURATION:-n/a}s"
+        echo "Compile System App:     ${SYSAPP_COMPILE_DURATION:-n/a}s"
+        echo "Compile System App Test:${TEST_COMPILE_DURATION:-n/a}s"
+        echo "Publish extensions:     ${PUBLISH_DURATION:-n/a}s"
+        echo "Run tests:              ${TEST_DURATION:-n/a}s"
+        echo "Total:                  ${TOTAL}s"
