@@ -20,9 +20,9 @@ on:
           - bcapps-system-app
           - sample-extension
       bc_version:
-        description: 'BC version for NuGet symbols (e.g. 26.3.36158.36341)'
+        description: 'BC version for NuGet symbols (e.g. 27.5.46862.48004)'
         required: false
-        default: '26.3.36158.36341'
+        default: '27.5.46862.48004'
         type: string
       description:
         description: 'Run description (optional, shown in summary)'
@@ -30,10 +30,10 @@ on:
         type: string
 
 env:
-  BC_VERSION: ${{ inputs.bc_version || '26.3.36158.36341' }}
+  BC_VERSION: ${{ inputs.bc_version || '27.5.46862.48004' }}
   # Platform (System) symbols have an independent version track.
-  # 26.0.38176 is the platform version that ships with BC app 26.3.36158.36341.
-  PLATFORM_VERSION: '26.0.38176'
+  # 26.0.38176 is the platform version that ships with BC app 27.5.46862.48004.
+  PLATFORM_VERSION: '27.0.46760'
   BC_SYMBOLS_BASE_URL: 'https://dynamicssmb2.pkgs.visualstudio.com/571e802d-b44b-45fc-bd41-4cfddec73b44/_packaging/b656b10c-3de0-440c-900c-bc2e4e86d84c/nuget/v3/flat2'
   # Latest stable AL tools as of 2025-11 (works on both Linux and Windows).
   AL_TOOLS_VERSION: '16.2.28.57946'
@@ -806,6 +806,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Linux - Full Pipeline (Headless)
     if: inputs.run_type == 'full-pipeline'
+    timeout-minutes: 30
     outputs:
       total_duration: ${{ steps.record.outputs.total_duration }}
       compile_duration: ${{ steps.record.outputs.compile_duration }}
