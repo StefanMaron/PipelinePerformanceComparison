@@ -871,6 +871,12 @@ jobs:
         printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\n" > .env
 
         docker compose build --no-cache bc
+
+        # Verify Docker image contents before starting
+        echo "=== Docker image verification ==="
+        docker compose run --rm --no-deps --entrypoint "" bc sh -c \
+          'echo "Hook dir:" && ls -la /bc/hook/*.dll /bc/hook/*.so 2>/dev/null && echo "---" && echo "Entrypoint:" && head -10 /bc/scripts/entrypoint.sh'
+
         docker compose up -d
 
         # Copy pre-downloaded artifacts into the container
@@ -879,28 +885,24 @@ jobs:
         docker compose cp "$ARTIFACTS_PATH/app/." bc:/bc/artifacts/app/
         docker compose cp "$ARTIFACTS_PATH/platform/." bc:/bc/artifacts/platform/
         echo "Artifacts copied."
-        echo "Host structure:"
-        find "$ARTIFACTS_PATH" -maxdepth 3 -type d | head -20
-        echo "Container structure:"
-        docker compose exec bc find /bc/artifacts -maxdepth 3 -type d 2>/dev/null | head -20
 
         echo "Waiting for BC (DB restore + compilation)..."
         for i in $(seq 1 120); do
           docker compose logs bc 2>&1 | grep -q "Press Enter" && { echo "BC ready after $((i*5))s"; break; }
           if [ $((i % 6)) -eq 0 ]; then
-            LAST=$(docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[artifacts\]\|HttpSysStub\|Exception\|ERROR" | tail -1)
+            LAST=$(docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[StartupHook\]\|Exception\|ERROR" | tail -3)
             echo "  $((i*5))s: $LAST"
           fi
           if ! docker compose ps bc 2>/dev/null | grep -q "Up"; then
-            echo "ERROR: BC container died"
-            docker compose logs bc 2>&1 | tail -50
+            echo "ERROR: BC container died — full logs:"
+            docker compose logs bc 2>&1
             exit 1
           fi
           sleep 5
         done
         if ! docker compose logs bc 2>&1 | grep -q "Press Enter"; then
-          echo "ERROR: BC did not start"
-          docker compose logs bc 2>&1 | tail -50
+          echo "ERROR: BC did not start — full logs:"
+          docker compose logs bc 2>&1
           exit 1
         fi
         INSTANCE=$(docker compose exec bc grep -oP 'ServerInstance" value="\K[^"]+' /bc/service/CustomSettings.config 2>/dev/null || echo "InstanceName")
