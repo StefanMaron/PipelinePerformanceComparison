@@ -187,12 +187,7 @@ jobs:
 
         # Publish TestRunner extension first (provides test API)
         echo "Publishing TestRunner..."
-        docker compose -f aldirectcompile/docker-compose.yml exec bc \
-          curl -s -o /dev/null -w "TestRunner: HTTP %{http_code}\n" --max-time 30 \
-            -u "$AUTH" -X POST \
-            -F "file=@/bc/testrunner/TestRunner.app;type=application/octet-stream" \
-            "$DEV" 2>/dev/null || \
-        curl -s -o /dev/null -w "TestRunner: HTTP %{http_code}\n" --max-time 30 \
+        curl -s -o /dev/null -w "TestRunner: HTTP %{http_code}\n" --max-time 60 \
           -u "$AUTH" -X POST \
           -F "file=@aldirectcompile/TestRunnerExtension/TestRunner.app;type=application/octet-stream" \
           "$DEV"
@@ -200,7 +195,7 @@ jobs:
         # Publish sample extension (contains test codeunit)
         APP_FILE=$(find . -maxdepth 1 -name "*.app" | head -1)
         echo "Publishing sample extension: $APP_FILE"
-        curl -s -o /dev/null -w "Sample ext: HTTP %{http_code}\n" --max-time 30 \
+        curl -s -o /dev/null -w "Sample ext: HTTP %{http_code}\n" --max-time 60 \
           -u "$AUTH" -X POST \
           -F "file=@$APP_FILE;type=application/octet-stream" \
           "$DEV"
