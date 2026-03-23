@@ -870,15 +870,8 @@ jobs:
         echo "SA_PASSWORD=Passw0rd123!" > .env
 
         # Create a compose override that uses bind mount instead of Docker volume
-        cat > docker-compose.override.yml << OVERRIDE
-        services:
-          sql:
-            volumes:
-              - ${ARTIFACTS_PATH}:/bc/artifacts:ro
-          bc:
-            volumes:
-              - ${ARTIFACTS_PATH}:/bc/artifacts
-        OVERRIDE
+        printf 'services:\n  sql:\n    volumes:\n      - %s:/bc/artifacts:ro\n  bc:\n    volumes:\n      - %s:/bc/artifacts\n' "$ARTIFACTS_PATH" "$ARTIFACTS_PATH" > docker-compose.override.yml
+        cat docker-compose.override.yml
 
         docker compose build --no-cache bc
         docker compose up -d
