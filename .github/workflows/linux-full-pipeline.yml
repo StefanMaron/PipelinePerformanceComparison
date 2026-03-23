@@ -180,13 +180,34 @@ jobs:
         COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
         echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV
 
-    - name: Publish extension to BC
+    - name: Publish extensions to BC
       run: |
+        DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=synchronize"
+        AUTH="admin:Admin123!"
+
+        # Publish TestRunner extension first (provides test API)
+        echo "Publishing TestRunner..."
+        docker compose -f aldirectcompile/docker-compose.yml exec bc \
+          curl -s -o /dev/null -w "TestRunner: HTTP %{http_code}\n" --max-time 30 \
+            -u "$AUTH" -X POST \
+            -F "file=@/bc/testrunner/TestRunner.app;type=application/octet-stream" \
+            "$DEV" 2>/dev/null || \
+        curl -s -o /dev/null -w "TestRunner: HTTP %{http_code}\n" --max-time 30 \
+          -u "$AUTH" -X POST \
+          -F "file=@aldirectcompile/TestRunnerExtension/TestRunner.app;type=application/octet-stream" \
+          "$DEV"
+
+        # Publish sample extension (contains test codeunit)
         APP_FILE=$(find . -maxdepth 1 -name "*.app" | head -1)
-        curl -s -o /dev/null -w "Publish: HTTP %{http_code}\n" --max-time 30 \
-          -u "admin:Admin123!" -X POST \
+        echo "Publishing sample extension: $APP_FILE"
+        curl -s -o /dev/null -w "Sample ext: HTTP %{http_code}\n" --max-time 30 \
+          -u "$AUTH" -X POST \
           -F "file=@$APP_FILE;type=application/octet-stream" \
-          "http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=synchronize"
+          "$DEV"
+
+        # Wait for extensions to compile
+        echo "Waiting for extensions to compile..."
+        sleep 15
 
     - name: Run AL tests via OData
       run: |
@@ -200,14 +221,14 @@ jobs:
           python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])")
         echo "Company ID: $COMPANY_ID"
 
-        # Use the Test Runner API (published by entrypoint) on OData port
-        API="$ODATA/api/custom/automation/v1.0/companies($COMPANY_ID)"
+        # Custom API pages are on port 7052 (HttpSysStub maps /api → :7052)
+        API="http://localhost:7052/custom/automation/v1.0/companies($COMPANY_ID)"
 
-        # Verify the Test Runner API is available
-        echo "Checking API availability..."
-        for i in $(seq 1 12); do
+        # Verify the Test Runner API is available (extension may still be compiling)
+        echo "Checking Test Runner API availability..."
+        for i in $(seq 1 24); do
           RESP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -u "$AUTH" "$API/codeunitRunRequests" 2>&1)
-          [ "$RESP" = "200" ] && break
+          [ "$RESP" = "200" ] && { echo "  API ready"; break; }
           echo "  API not ready (HTTP $RESP), waiting..."
           sleep 5
         done
@@ -217,11 +238,10 @@ jobs:
         CREATE_RESP=$(curl -s --max-time 10 -u "$AUTH" -X POST \
           -H "Content-Type: application/json" -d '{"CodeunitId": 50001}' \
           "$API/codeunitRunRequests")
-        echo "Create response: $CREATE_RESP" | head -c 500
-        RID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',d.get('Id','')))")
+        RID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Id',''))")
         echo "Run request ID: $RID"
 
-        # Execute the test
+        # Execute the test via bound action
         echo "Executing tests..."
         curl -s --max-time 120 -u "$AUTH" -X POST \
           -H "Content-Type: application/json" \
@@ -230,7 +250,7 @@ jobs:
         # Check status
         STATUS=$(curl -s --max-time 10 -u "$AUTH" \
           "$API/codeunitRunRequests($RID)" | \
-          python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('Status',d.get('status','Unknown')))")
+          python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('Status','Unknown'))")
         echo "Test status: $STATUS"
 
         # Read test results from log entries
