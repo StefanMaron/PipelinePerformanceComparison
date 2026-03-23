@@ -873,10 +873,11 @@ jobs:
         docker compose build --no-cache bc
         docker compose up -d
 
-        # Copy pre-downloaded artifacts into the bc-artifacts volume
-        echo "Copying artifacts into Docker volume..."
-        docker compose cp "$ARTIFACTS_PATH/." bc:/bc/artifacts/
-        echo "Artifacts copied"
+        # Copy pre-downloaded artifacts into the container
+        echo "Copying artifacts into container..."
+        docker compose cp "$ARTIFACTS_PATH/app" bc:/bc/artifacts/
+        docker compose cp "$ARTIFACTS_PATH/platform" bc:/bc/artifacts/
+        echo "Artifacts copied: $(docker compose exec bc du -sh /bc/artifacts/ 2>/dev/null | cut -f1)"
 
         echo "Waiting for BC (DB restore + compilation)..."
         for i in $(seq 1 120); do
