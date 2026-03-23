@@ -426,6 +426,7 @@ jobs:
 # WINDOWS COMPILE JOB
 # ============================================================================
   windows-compile:
+    if: false  # Disabled — focusing on Linux headless
     runs-on: windows-2022
     name: Windows - Compile
     outputs:
@@ -966,9 +967,9 @@ jobs:
 # WINDOWS FULL PIPELINE JOB  (compile + BcContainerHelper + tests)
 # ============================================================================
   windows-full:
+    if: false  # Disabled — focusing on Linux headless
     runs-on: windows-latest
     name: Windows - Full Pipeline
-    if: inputs.run_type == 'full-pipeline'
     timeout-minutes: 90
     outputs:
       total_duration: ${{ steps.record.outputs.total_duration }}
@@ -1416,7 +1417,7 @@ jobs:
   compare:
     runs-on: ubuntu-latest
     name: Compare Results
-    needs: [linux-compile, windows-compile]
+    needs: [linux-compile, linux-full]
     # Run even if compile jobs fail so we still get a partial report
     if: always() && !cancelled()
 
