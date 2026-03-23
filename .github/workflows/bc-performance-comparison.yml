@@ -843,7 +843,7 @@ jobs:
         cd aldirectcompile
         BC_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/w1"
         printf "BC_ARTIFACT_URL=%s\nSA_PASSWORD=Passw0rd123!\n" "$BC_URL" > .env
-        docker compose build bc
+        docker compose build --no-cache bc
         docker compose up -d
         echo "Waiting for BC (artifact download + compilation)..."
         for i in $(seq 1 120); do
