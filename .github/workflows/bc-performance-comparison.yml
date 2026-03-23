@@ -877,7 +877,11 @@ jobs:
         echo "Copying artifacts into container..."
         docker compose cp "$ARTIFACTS_PATH/app" bc:/bc/artifacts/
         docker compose cp "$ARTIFACTS_PATH/platform" bc:/bc/artifacts/
-        echo "Artifacts copied: $(docker compose exec bc du -sh /bc/artifacts/ 2>/dev/null | cut -f1)"
+        echo "Artifacts copied."
+        echo "Host structure:"
+        find "$ARTIFACTS_PATH" -maxdepth 3 -type d | head -20
+        echo "Container structure:"
+        docker compose exec bc find /bc/artifacts -maxdepth 3 -type d 2>/dev/null | head -20
 
         echo "Waiting for BC (DB restore + compilation)..."
         for i in $(seq 1 120); do
