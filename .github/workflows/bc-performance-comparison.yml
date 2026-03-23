@@ -862,8 +862,8 @@ jobs:
         done
         if ! docker compose logs bc 2>&1 | grep -q "Press Enter"; then
           echo "ERROR: BC did not start within 10 minutes"
-          echo "=== Full BC logs ==="
-          docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[artifacts\]\|HttpSysStub\|Exception\|ERROR\|failed\|NullRef\|Press Enter" | tail -30
+          echo "=== Last 100 lines of BC container logs ==="
+          docker compose logs bc 2>&1 | tail -100
           exit 1
         fi
         INSTANCE=$(docker compose exec bc grep -oP 'ServerInstance" value="\K[^"]+' /bc/service/CustomSettings.config 2>/dev/null || echo "InstanceName")
