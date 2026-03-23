@@ -203,11 +203,22 @@ jobs:
         # Use the Test Runner API (published by entrypoint) on OData port
         API="$ODATA/api/custom/automation/v1.0/companies($COMPANY_ID)"
 
+        # Verify the Test Runner API is available
+        echo "Checking API availability..."
+        for i in $(seq 1 12); do
+          RESP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -u "$AUTH" "$API/codeunitRunRequests" 2>&1)
+          [ "$RESP" = "200" ] && break
+          echo "  API not ready (HTTP $RESP), waiting..."
+          sleep 5
+        done
+
         # Create a run request for test codeunit 50001 (Sample Data Tests PPC)
         echo "Creating test run request for codeunit 50001..."
-        RID=$(curl -s --max-time 10 -u "$AUTH" -X POST \
+        CREATE_RESP=$(curl -s --max-time 10 -u "$AUTH" -X POST \
           -H "Content-Type: application/json" -d '{"CodeunitId": 50001}' \
-          "$API/codeunitRunRequests" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Id',d.get('id','')))")
+          "$API/codeunitRunRequests")
+        echo "Create response: $CREATE_RESP" | head -c 500
+        RID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',d.get('Id','')))")
         echo "Run request ID: $RID"
 
         # Execute the test
