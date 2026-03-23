@@ -845,19 +845,25 @@ jobs:
         printf "BC_ARTIFACT_URL=%s\nSA_PASSWORD=Passw0rd123!\n" "$BC_URL" > .env
         docker compose build bc
         docker compose up -d
-        echo "Waiting for BC (artifact download + compilation, up to 20 min)..."
-        for i in $(seq 1 240); do
+        echo "Waiting for BC (artifact download + compilation)..."
+        for i in $(seq 1 120); do
           docker compose logs bc 2>&1 | grep -q "Press Enter" && { echo "BC ready after $((i*5))s"; break; }
-          # Show progress every 30s
           if [ $((i % 6)) -eq 0 ]; then
-            LAST=$(docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[artifacts\]" | tail -1)
-            echo "  ${i}x5s: $LAST"
+            LAST=$(docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[artifacts\]\|HttpSysStub\|Exception\|ERROR" | tail -1)
+            echo "  $((i*5))s: $LAST"
+          fi
+          # Bail early if container died
+          if ! docker compose ps bc --format json 2>/dev/null | grep -q '"running"'; then
+            echo "ERROR: BC container is not running"
+            docker compose logs bc 2>&1 | tail -20
+            exit 1
           fi
           sleep 5
         done
         if ! docker compose logs bc 2>&1 | grep -q "Press Enter"; then
-          echo "ERROR: BC did not start. Last entrypoint logs:"
-          docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[artifacts\]\|ERROR\|failed\|Exception" | tail -15
+          echo "ERROR: BC did not start within 10 minutes"
+          echo "=== Full BC logs ==="
+          docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[artifacts\]\|HttpSysStub\|Exception\|ERROR\|failed\|NullRef\|Press Enter" | tail -30
           exit 1
         fi
         INSTANCE=$(docker compose exec bc grep -oP 'ServerInstance" value="\K[^"]+' /bc/service/CustomSettings.config 2>/dev/null || echo "InstanceName")
