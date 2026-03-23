@@ -875,8 +875,9 @@ jobs:
 
         # Copy pre-downloaded artifacts into the container
         echo "Copying artifacts into container..."
-        docker compose cp "$ARTIFACTS_PATH/app" bc:/bc/artifacts/
-        docker compose cp "$ARTIFACTS_PATH/platform" bc:/bc/artifacts/
+        docker compose exec bc mkdir -p /bc/artifacts/app /bc/artifacts/platform
+        docker compose cp "$ARTIFACTS_PATH/app/." bc:/bc/artifacts/app/
+        docker compose cp "$ARTIFACTS_PATH/platform/." bc:/bc/artifacts/platform/
         echo "Artifacts copied."
         echo "Host structure:"
         find "$ARTIFACTS_PATH" -maxdepth 3 -type d | head -20
