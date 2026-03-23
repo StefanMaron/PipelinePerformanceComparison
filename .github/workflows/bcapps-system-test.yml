@@ -165,18 +165,28 @@ jobs:
         find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp {} mock-assemblies/ \; 2>/dev/null
         echo "Mock assemblies: $(ls mock-assemblies/*.dll 2>/dev/null | wc -l) DLLs"
 
-        # Copy service DLLs for assembly probing
+        # Copy only specific service DLLs needed for assembly probing
+        # (full set causes NullReferenceException in CecilDotNetTypeLoader
+        #  from Windows-specific type forwarding chains)
         SVC_DIR=$(find bc-artifacts/platform/ServiceTier -name "Microsoft.Dynamics.Nav.Server.dll" -printf "%h\n" 2>/dev/null | head -1)
         if [ -n "$SVC_DIR" ]; then
-          cp "$SVC_DIR"/*.dll service-dlls/ 2>/dev/null
-          echo "Service DLLs: $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
+          # Only copy the framework/client DLLs the compiler needs for dotnet interop
+          for dll in \
+            "Microsoft.Dynamics.Framework.UI.Client.dll" \
+            "Newtonsoft.Json.dll" \
+            "DocumentFormat.OpenXml.dll" \
+            "Microsoft.Dynamics.Nav.Types.dll" \
+            "Microsoft.Dynamics.Nav.Ncl.dll"; do
+            [ -f "$SVC_DIR/$dll" ] && cp "$SVC_DIR/$dll" service-dlls/
+          done
+          echo "Service DLLs (selective): $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
         fi
 
-        # Build assembly probing paths
-        PROBING="$(pwd)/service-dlls,$(pwd)/mock-assemblies"
-        # Add .NET runtime path
+        # Build assembly probing paths — .NET runtime first, then mock assemblies
         DOTNET_RT=$(find /usr/share/dotnet/shared/Microsoft.NETCore.App -maxdepth 1 -name "8.*" | sort -V | tail -1)
-        [ -n "$DOTNET_RT" ] && PROBING="$PROBING,$DOTNET_RT"
+        PROBING="$(pwd)/mock-assemblies"
+        [ -n "$DOTNET_RT" ] && PROBING="$DOTNET_RT,$PROBING"
+        [ "$(ls service-dlls/*.dll 2>/dev/null | wc -l)" -gt 0 ] && PROBING="$PROBING,$(pwd)/service-dlls"
         echo "PROBING_PATHS=$PROBING" >> $GITHUB_ENV
         echo "Assembly probing: $PROBING"
 
