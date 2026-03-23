@@ -831,8 +831,12 @@ jobs:
         git clone --depth 1 https://github.com/StefanMaron/alDirectCompile.git aldirectcompile
         cd aldirectcompile/StartupHook
         dotnet publish -c Release -o bin/Release/net8.0/publish
-        SQLCLIENT=$(find ~/.nuget/packages/microsoft.data.sqlclient -name "Microsoft.Data.SqlClient.dll" -path "*/unix/*" 2>/dev/null | head -1)
-        [ -n "$SQLCLIENT" ] && cp "$SQLCLIENT" bin/Release/net8.0/publish/
+        # The MSBuild CopySqlClient target already copies the net8.0 unix build.
+        # Verify it's the right one (must NOT reference System.Data.Common v9.0).
+        strings bin/Release/net8.0/publish/Microsoft.Data.SqlClient.dll | grep -q "9.0.0.0" && {
+          echo "ERROR: SqlClient references .NET 9 — using explicit net8.0 build"
+          cp ~/.nuget/packages/microsoft.data.sqlclient/6.0.5/runtimes/unix/lib/net8.0/Microsoft.Data.SqlClient.dll bin/Release/net8.0/publish/
+        } || echo "SqlClient net8.0 build OK"
         cd ../..
         STEP_END=$(date +%s.%N)
         echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
