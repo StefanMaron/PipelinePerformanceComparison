@@ -1,0 +1,380 @@
+name: Linux Full Pipeline (Headless)
+
+on:
+  workflow_dispatch:
+    inputs:
+      compile_target:
+        description: 'What to compile'
+        required: false
+        default: 'bcapps-system-app'
+        type: choice
+        options:
+          - bcapps-system-app
+          - sample-extension
+      bc_version:
+        description: 'BC version for NuGet symbols (e.g. 27.5.46862.48004)'
+        required: false
+        default: '27.5.46862.48004'
+        type: string
+      description:
+        description: 'Run description (optional, shown in summary)'
+        required: false
+        type: string
+
+env:
+  BC_VERSION: ${{ inputs.bc_version || '27.5.46862.48004' }}
+  # Platform (System) symbols have an independent version track.
+  # 26.0.38176 is the platform version that ships with BC app 27.5.46862.48004.
+  PLATFORM_VERSION: '27.0.46760'
+  BC_SYMBOLS_BASE_URL: 'https://dynamicssmb2.pkgs.visualstudio.com/571e802d-b44b-45fc-bd41-4cfddec73b44/_packaging/b656b10c-3de0-440c-900c-bc2e4e86d84c/nuget/v3/flat2'
+  # Latest stable AL tools as of 2025-11 (works on both Linux and Windows).
+  AL_TOOLS_VERSION: '16.2.28.57946'
+  BCDEV_REPO: 'https://github.com/StefanMaron/BCDevOnLinux.git'
+  BCDEV_BRANCH: 'v2'
+  # BCApps branch that targets platform 26.0.0.0 (matches our platform symbols)
+  BCAPPS_BRANCH: 'releases/26.0'
+  # BC artifact CDN base URL — used to download test toolkit .app files from the platform artifact
+  BC_ARTIFACT_BASE: 'https://bcartifacts-exdbf9fwegejdqak.b02.azurefd.net/sandbox'
+
+# ============================================================================
+# LINUX FULL PIPELINE JOB  (compile + BCDevOnLinux container + tests)
+# ============================================================================
+jobs:
+  linux-full:
+    runs-on: ubuntu-latest
+    name: Linux - Full Pipeline (Headless)
+    timeout-minutes: 30
+    outputs:
+      total_duration: ${{ steps.record.outputs.total_duration }}
+      compile_duration: ${{ steps.record.outputs.compile_duration }}
+      container_duration: ${{ steps.record.outputs.container_duration }}
+      test_duration: ${{ steps.record.outputs.test_duration }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Record start time
+      run: echo "START_EPOCH=$(date +%s.%N)" >> $GITHUB_ENV
+
+    - name: Setup .NET and AL tools
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Clone and build alDirectCompile
+      run: |
+        STEP_START=$(date +%s.%N)
+        git clone --depth 1 https://github.com/StefanMaron/alDirectCompile.git aldirectcompile
+        cd aldirectcompile/StartupHook
+        dotnet publish -c Release -o bin/Release/net8.0/publish
+        # The MSBuild CopySqlClient target already copies the net8.0 unix build.
+        # Verify it's the right one (must NOT reference System.Data.Common v9.0).
+        strings bin/Release/net8.0/publish/Microsoft.Data.SqlClient.dll | grep -q "9.0.0.0" && {
+          echo "ERROR: SqlClient references .NET 9 — using explicit net8.0 build"
+          cp ~/.nuget/packages/microsoft.data.sqlclient/6.0.5/runtimes/unix/lib/net8.0/Microsoft.Data.SqlClient.dll bin/Release/net8.0/publish/
+        } || echo "SqlClient net8.0 build OK"
+        cd ../..
+        STEP_END=$(date +%s.%N)
+        echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Download BC artifacts (on host)
+      run: |
+        STEP_START=$(date +%s.%N)
+        BC_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/w1"
+        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/platform"
+        DEST="$(pwd)/bc-artifacts"
+        mkdir -p "$DEST/app" "$DEST/platform"
+
+        echo "Downloading app: $BC_URL"
+        curl -sSL "$BC_URL" -o "$DEST/bc-app.zip"
+        unzip -qo "$DEST/bc-app.zip" -d "$DEST/app"
+        rm -f "$DEST/bc-app.zip"
+
+        echo "Downloading platform: $PLATFORM_URL"
+        curl -sSL "$PLATFORM_URL" -o "$DEST/bc-platform.zip"
+        unzip -qo "$DEST/bc-platform.zip" 'ServiceTier/*' 'ModernDev/*' -d "$DEST/platform" 2>/dev/null || \
+          unzip -qo "$DEST/bc-platform.zip" -d "$DEST/platform"
+        rm -f "$DEST/bc-platform.zip"
+
+        echo "Artifacts: $(du -sh "$DEST" | cut -f1)"
+        STEP_END=$(date +%s.%N)
+        echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Start BC service tier
+      run: |
+        STEP_START=$(date +%s.%N)
+        cd aldirectcompile
+
+        # Pre-downloaded artifacts are at ../bc-artifacts
+        # Copy them into the Docker volume after containers start
+        ARTIFACTS_PATH="$(cd .. && pwd)/bc-artifacts"
+        printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\n" > .env
+
+        docker compose build --no-cache bc
+
+        # Verify Docker image contents before starting
+        echo "=== Docker image verification ==="
+        docker compose run --rm --no-deps --entrypoint "" bc sh -c \
+          'echo "Hook dir:" && ls -la /bc/hook/*.dll /bc/hook/*.so 2>/dev/null && echo "---" && echo "Entrypoint:" && head -10 /bc/scripts/entrypoint.sh'
+
+        docker compose up -d
+
+        # Copy pre-downloaded artifacts into the container
+        echo "Copying artifacts into container..."
+        docker compose exec bc mkdir -p /bc/artifacts/app /bc/artifacts/platform
+        docker compose cp "$ARTIFACTS_PATH/app/." bc:/bc/artifacts/app/
+        docker compose cp "$ARTIFACTS_PATH/platform/." bc:/bc/artifacts/platform/
+        echo "Artifacts copied."
+
+        echo "Waiting for BC (DB restore + compilation)..."
+        for i in $(seq 1 120); do
+          docker compose logs bc 2>&1 | grep -q "Press Enter" && { echo "BC ready after $((i*5))s"; break; }
+          if [ $((i % 6)) -eq 0 ]; then
+            LAST=$(docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[StartupHook\]\|Exception\|ERROR" | tail -3)
+            echo "  $((i*5))s: $LAST"
+          fi
+          if ! docker compose ps bc 2>/dev/null | grep -q "Up"; then
+            echo "ERROR: BC container died — full logs:"
+            docker compose logs bc 2>&1
+            exit 1
+          fi
+          sleep 5
+        done
+        if ! docker compose logs bc 2>&1 | grep -q "Press Enter"; then
+          echo "ERROR: BC did not start — full logs:"
+          docker compose logs bc 2>&1
+          exit 1
+        fi
+        INSTANCE=$(docker compose exec bc grep -oP 'ServerInstance" value="\K[^"]+' /bc/service/CustomSettings.config 2>/dev/null || echo "InstanceName")
+        echo "INSTANCE=$INSTANCE" >> $GITHUB_ENV
+        cd ..
+        STEP_END=$(date +%s.%N)
+        CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "CONTAINER_DURATION=$CONTAINER_DURATION" >> $GITHUB_ENV
+
+    - name: Install AL tools and get symbols
+      run: |
+        STEP_START=$(date +%s.%N)
+        dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools.Linux \
+          --version ${{ env.AL_TOOLS_VERSION }} || true
+        echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+        mkdir -p .alpackages
+        docker run --rm -v aldirectcompile_bc-artifacts:/data -v $(pwd)/.alpackages:/out alpine \
+          sh -c 'cp "$(find /data/platform/ModernDev -name System.app 2>/dev/null | head -1)" /out/System.app && find /data/app/Extensions -name "*.app" -exec cp {} /out/ \;'
+        echo "Symbols: $(ls .alpackages/*.app | wc -l) .app files"
+        STEP_END=$(date +%s.%N)
+        echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Compile AL extension
+      env:
+        DOTNET_ReadyToRun: '0'
+        COMPlus_ReadyToRun: '0'
+      run: |
+        STEP_START=$(date +%s.%N)
+        AL compile /project:. /packagecachepath:.alpackages
+        echo "Compiled: $(ls -la *.app 2>/dev/null)"
+        STEP_END=$(date +%s.%N)
+        COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV
+
+    - name: Publish extension to BC
+      run: |
+        APP_FILE=$(find . -maxdepth 1 -name "*.app" | head -1)
+        curl -s -o /dev/null -w "Publish: HTTP %{http_code}\n" --max-time 30 \
+          -u "admin:Admin123!" -X POST \
+          -F "file=@$APP_FILE;type=application/octet-stream" \
+          "http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=synchronize"
+
+    - name: Run AL tests via OData
+      run: |
+        STEP_START=$(date +%s.%N)
+        COMPANY_ID=$(curl -s --max-time 10 -u "admin:Admin123!" \
+          "http://localhost:7048/$INSTANCE/ODataV4/Company" | \
+          python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])")
+        API="http://localhost:7052/$INSTANCE/api/custom/automation/v1.0/companies($COMPANY_ID)"
+
+        RID=$(curl -s --max-time 10 -u "admin:Admin123!" -X POST \
+          -H "Content-Type: application/json" -d '{"CodeunitId": 50002}' \
+          "$API/codeunitRunRequests" | python3 -c "import sys,json; print(json.load(sys.stdin)['Id'])")
+
+        curl -s --max-time 120 -u "admin:Admin123!" -X POST \
+          -H "Content-Type: application/json" \
+          "$API/codeunitRunRequests($RID)/Microsoft.NAV.runCodeunit" > /dev/null
+
+        STATUS=$(curl -s --max-time 10 -u "admin:Admin123!" \
+          "$API/codeunitRunRequests($RID)" | \
+          python3 -c "import sys,json;d=json.load(sys.stdin);print(d['Status'])")
+        echo "Test status: $STATUS"
+
+        curl -s --max-time 10 -u "admin:Admin123!" "$API/logEntries" | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        p=f=0
+        for e in data['value']:
+            if e['functionName']:
+                if e['success']: p+=1; print(f'  ✓ {e[\"codeunitName\"]}::{e[\"functionName\"]}')
+                else: f+=1; print(f'  ✗ {e[\"codeunitName\"]}::{e[\"functionName\"]}')
+        print(f'\nPassed: {p}, Failed: {f}')
+        if f>0: exit(1)
+        "
+        STEP_END=$(date +%s.%N)
+        TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "TEST_DURATION=$TEST_DURATION" >> $GITHUB_ENV
+
+    - name: Record metrics
+      id: record
+      if: always()
+      run: |
+        END_EPOCH=$(date +%s.%N)
+        TOTAL=$(python3 -c "print(f'{$END_EPOCH - $START_EPOCH:.3f}')")
+        echo "total_duration=$TOTAL"                     >> $GITHUB_OUTPUT
+        echo "compile_duration=${COMPILE_DURATION:-0}"   >> $GITHUB_OUTPUT
+        echo "container_duration=${CONTAINER_DURATION:-0}" >> $GITHUB_OUTPUT
+        echo "test_duration=${TEST_DURATION:-0}"         >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "============================================"
+        echo "  Linux Headless Pipeline - Timing Summary"
+        echo "============================================"
+        echo "  Setup + build:     ${SETUP_DURATION:-?}s"
+        echo "  Container start:   ${CONTAINER_DURATION:-?}s"
+        echo "  Symbols download:  ${DOWNLOAD_DURATION:-?}s"
+        echo "  Compile extension: ${COMPILE_DURATION:-?}s"
+        echo "  Run tests:         ${TEST_DURATION:-?}s"
+        echo "  TOTAL:             ${TOTAL}s"
+        echo "============================================"
+
+        printf '{"platform":"linux-headless","total_duration":%s,"setup_duration":%s,"container_duration":%s,"download_duration":%s,"compile_duration":%s,"test_duration":%s,"timestamp":"%s","bc_version":"%s"}\n' \
+          "$TOTAL" "${SETUP_DURATION:-0}" "${CONTAINER_DURATION:-0}" \
+          "${DOWNLOAD_DURATION:-0}" "${COMPILE_DURATION:-0}" "${TEST_DURATION:-0}" \
+          "$(date -Iseconds)" "${{ env.BC_VERSION }}" \
+          > linux-full-metrics.json
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-full-artifacts
+        path: |
+          *.app
+          linux-full-metrics.json
+        retention-days: 30
+
+# ============================================================================
+# SUMMARY JOB — shows timing results after the pipeline completes
+# ============================================================================
+  summary:
+    runs-on: ubuntu-latest
+    name: Pipeline Summary
+    needs: [linux-full]
+    if: always() && !cancelled()
+
+    steps:
+    - name: Download metrics artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: linux-full-artifacts
+        path: ./metrics
+      continue-on-error: true
+
+    - name: Fetch GitHub Actions job timing
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        mkdir -p metrics/gh_timings
+        gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+          --jq '[.jobs[] | select(.name == "Linux - Full Pipeline (Headless)")] | if length > 0 then .[0] | {name, started_at, completed_at, conclusion, duration_seconds: (((.completed_at // now | fromdateiso8601) - (.started_at | fromdateiso8601)))} else {name: "Linux - Full Pipeline (Headless)", duration_seconds: null} end' \
+          > metrics/gh_timings/linux-full.json 2>/dev/null || echo '{}' > metrics/gh_timings/linux-full.json
+
+    - name: Generate summary report
+      run: |
+        python3 << 'PYTHON'
+        import json, os
+        from pathlib import Path
+        from datetime import datetime
+
+        metrics_dir = Path('./metrics')
+
+        def load_json(pattern):
+            files = list(metrics_dir.rglob(pattern))
+            if not files:
+                return None
+            try:
+                with open(files[0], encoding='utf-8-sig') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"  Warning: failed to load {pattern}: {e}")
+                return None
+
+        linux_full = load_json('linux-full-metrics.json')
+
+        gh_timing = None
+        gh_file = metrics_dir / 'gh_timings' / 'linux-full.json'
+        if gh_file.exists():
+            try:
+                gh_timing = json.loads(gh_file.read_text()).get('duration_seconds')
+            except Exception:
+                pass
+
+        desc       = "${{ inputs.description }}"
+        bc_ver     = "${{ env.BC_VERSION }}"
+
+        def fmt(val, unit='s'):
+            if val is None: return 'N/A'
+            try:
+                return f'{float(val):.2f}{unit}'
+            except (TypeError, ValueError):
+                return 'N/A'
+
+        lines = []
+        lines.append('# Linux Full Pipeline (Headless) - Performance Results\n')
+        if desc:
+            lines.append(f'> {desc}\n')
+        lines.append(f'*BC version: `{bc_ver}` | AL tools: `${{ env.AL_TOOLS_VERSION }}` | Run: `${{ github.run_id }}`*\n')
+        lines.append(f'*Generated: {datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}*\n')
+
+        if linux_full:
+            lf = linux_full
+            lines.append('\n## Timing Breakdown\n')
+            rows = [
+                ('Phase', 'Duration'),
+                ('---', '---'),
+                ('Setup + build (alDirectCompile)', fmt(lf.get('setup_duration'))),
+                ('BC artifact download', fmt(lf.get('download_duration'))),
+                ('Container start (DB restore + compilation)', fmt(lf.get('container_duration'))),
+                ('AL compilation', fmt(lf.get('compile_duration'))),
+                ('Test execution', fmt(lf.get('test_duration'))),
+                ('**Total (measured)**', f"**{fmt(lf.get('total_duration'))}**"),
+            ]
+            if gh_timing is not None:
+                rows.append(('GitHub Actions total (incl. overhead)', fmt(gh_timing)))
+            for r in rows:
+                lines.append('| ' + ' | '.join(str(x) for x in r) + ' |')
+        else:
+            lines.append('\n_Metrics not available (job failed or was cancelled)._\n')
+
+        lines.append('\n---')
+        lines.append('\n*Linux runner uses headless BC service tier via [alDirectCompile](https://github.com/StefanMaron/alDirectCompile)*')
+
+        report = '\n'.join(lines)
+        print(report)
+
+        with open('pipeline-summary.md', 'w') as f:
+            f.write(report)
+        print('\nSaved to pipeline-summary.md')
+        PYTHON
+
+    - name: Post results to job summary
+      if: always()
+      run: |
+        if [ -f pipeline-summary.md ]; then
+          cat pipeline-summary.md >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Upload summary report
+      uses: actions/upload-artifact@v4
+      with:
+        name: pipeline-summary
+        path: pipeline-summary.md
+        retention-days: 90
