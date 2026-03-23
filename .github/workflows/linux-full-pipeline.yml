@@ -172,6 +172,8 @@ jobs:
         COMPlus_ReadyToRun: '0'
       run: |
         STEP_START=$(date +%s.%N)
+        # Remove cloned repos so AL compiler doesn't pick up their .al files
+        rm -rf aldirectcompile bcapps-temp
         AL compile /project:. /packagecachepath:.alpackages
         echo "Compiled: $(ls -la *.app 2>/dev/null)"
         STEP_END=$(date +%s.%N)
