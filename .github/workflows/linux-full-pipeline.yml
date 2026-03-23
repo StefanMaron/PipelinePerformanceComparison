@@ -197,10 +197,14 @@ jobs:
         # Publish sample extension (contains test codeunit)
         APP_FILE=$(find . -maxdepth 1 -name "*.app" ! -name "TestRunner.app" | head -1)
         echo "Publishing sample extension: $APP_FILE"
-        curl -s -o /dev/null -w "Sample ext: HTTP %{http_code}\n" --max-time 60 \
+        PUBLISH_RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" --max-time 60 \
           -u "$AUTH" -X POST \
           -F "file=@$APP_FILE;type=application/octet-stream" \
-          "$DEV"
+          "$DEV")
+        PUBLISH_CODE=$(echo "$PUBLISH_RESP" | grep "HTTP_CODE:" | cut -d: -f2)
+        echo "Sample ext: HTTP $PUBLISH_CODE"
+        echo "$PUBLISH_RESP" | grep -v "HTTP_CODE:" | head -c 500
+        [ "$PUBLISH_CODE" = "200" ] || [ "$PUBLISH_CODE" = "204" ] || echo "WARNING: Publish may have failed"
 
         # Wait for extensions to compile
         echo "Waiting for extensions to compile..."
