@@ -865,16 +865,18 @@ jobs:
         STEP_START=$(date +%s.%N)
         cd aldirectcompile
 
-        # Point to pre-downloaded artifacts via bind mount override
+        # Pre-downloaded artifacts are at ../bc-artifacts
+        # Copy them into the Docker volume after containers start
         ARTIFACTS_PATH="$(cd .. && pwd)/bc-artifacts"
-        echo "SA_PASSWORD=Passw0rd123!" > .env
-
-        # Create a compose override that uses bind mount instead of Docker volume
-        printf 'services:\n  sql:\n    volumes:\n      - %s:/bc/artifacts:ro\n  bc:\n    volumes:\n      - %s:/bc/artifacts\n' "$ARTIFACTS_PATH" "$ARTIFACTS_PATH" > docker-compose.override.yml
-        cat docker-compose.override.yml
+        printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\n" > .env
 
         docker compose build --no-cache bc
         docker compose up -d
+
+        # Copy pre-downloaded artifacts into the bc-artifacts volume
+        echo "Copying artifacts into Docker volume..."
+        docker compose cp "$ARTIFACTS_PATH/." bc:/bc/artifacts/
+        echo "Artifacts copied"
 
         echo "Waiting for BC (DB restore + compilation)..."
         for i in $(seq 1 120); do
