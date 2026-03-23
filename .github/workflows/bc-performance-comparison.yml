@@ -924,7 +924,7 @@ jobs:
         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
         mkdir -p .alpackages
         docker run --rm -v aldirectcompile_bc-artifacts:/data -v $(pwd)/.alpackages:/out alpine \
-          sh -c 'cp $(find /data/platform/ModernDev -name System.app 2>/dev/null | head -1) /out/System.app'
+          sh -c 'cp "$(find /data/platform/ModernDev -name System.app 2>/dev/null | head -1)" /out/System.app'
         STEP_END=$(date +%s.%N)
         echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
