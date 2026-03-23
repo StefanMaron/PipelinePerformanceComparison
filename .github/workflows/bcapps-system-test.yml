@@ -165,15 +165,36 @@ jobs:
         find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp {} mock-assemblies/ \; 2>/dev/null
         echo "Mock assemblies: $(ls mock-assemblies/*.dll 2>/dev/null | wc -l) DLLs"
 
-        # Build assembly probing paths
-        # NOTE: Do NOT include BC service DLLs — they're Windows builds and cause
-        # CecilDotNetTypeLoader to crash on type forwarding chains.
-        # The .NET 8 runtime + mock assemblies are sufficient for System App compilation.
-        DOTNET_RT=$(find /usr/share/dotnet/shared/Microsoft.NETCore.App -maxdepth 1 -name "8.*" | sort -V | tail -1)
-        ASPNET_RT=$(find /usr/share/dotnet/shared/Microsoft.AspNetCore.App -maxdepth 1 -name "8.*" | sort -V | tail -1)
-        PROBING="$DOTNET_RT"
-        [ -n "$ASPNET_RT" ] && PROBING="$PROBING,$ASPNET_RT"
-        PROBING="$PROBING,$(pwd)/mock-assemblies"
+        # Build assembly probing paths for AL compiler
+        # CRITICAL: Use .NET 8 REFERENCE assemblies (not runtime!) for standard BCL types.
+        # Runtime DLLs have type-forwarding chains that crash the AL compiler's Cecil loader.
+        # Then add BC service DLLs (excluding System.* to avoid conflicts) for BC-specific types.
+        mkdir -p service-dlls
+        SVC_DIR=$(find bc-artifacts/platform/ServiceTier -name "Microsoft.Dynamics.Nav.Server.dll" -printf "%h\n" 2>/dev/null | head -1)
+        if [ -n "$SVC_DIR" ]; then
+          # Copy non-System DLLs from service dir + all subdirs (Add-ins etc.)
+          find "$SVC_DIR" -name "*.dll" | while read f; do
+            case "$(basename "$f")" in
+              System.*) ;; # skip — use ref assemblies instead
+              *) cp -n "$f" service-dlls/ 2>/dev/null ;;
+            esac
+          done
+          # But we DO need these specific System DLLs from service (not in ref assemblies)
+          for dll in System.Drawing.Common.dll System.IdentityModel.Tokens.Jwt.dll System.Private.ServiceModel.dll; do
+            find "$SVC_DIR" -name "$dll" 2>/dev/null | head -1 | xargs -I{} cp {} service-dlls/ 2>/dev/null
+          done
+          # Also from Test Assemblies
+          find bc-artifacts/platform -path "*Test Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
+          echo "Service DLLs: $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
+        fi
+
+        # Patch: comment out FaultException alias (Cecil loader can't resolve type forwarding)
+        sed -i '/assembly("System.ServiceModel.Primitives")/,/^    }/{s/^/\/\//}' \
+          "bcapps-temp/src/System Application/App/DotNet Aliases/src/dotnet.al" 2>/dev/null
+
+        # .NET 8 reference assemblies (stubs with type definitions, no forwarding chains)
+        REF_DIR=$(find /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref -maxdepth 2 -type d -name "net8.0" 2>/dev/null | head -1)
+        PROBING="$REF_DIR,$(pwd)/service-dlls,$(pwd)/mock-assemblies"
         echo "PROBING_PATHS=$PROBING" >> $GITHUB_ENV
         echo "Assembly probing: $PROBING"
 
