@@ -172,7 +172,9 @@ jobs:
         COMPlus_ReadyToRun: '0'
       run: |
         STEP_START=$(date +%s.%N)
-        # Remove cloned repos so AL compiler doesn't pick up their .al files
+        # Save TestRunner.app before cleanup, then remove cloned repos
+        # so AL compiler doesn't pick up their .al files
+        cp aldirectcompile/TestRunnerExtension/TestRunner.app TestRunner.app 2>/dev/null || true
         rm -rf aldirectcompile bcapps-temp
         AL compile /project:. /packagecachepath:.alpackages
         echo "Compiled: $(ls -la *.app 2>/dev/null)"
@@ -189,7 +191,7 @@ jobs:
         echo "Publishing TestRunner..."
         curl -s -o /dev/null -w "TestRunner: HTTP %{http_code}\n" --max-time 60 \
           -u "$AUTH" -X POST \
-          -F "file=@aldirectcompile/TestRunnerExtension/TestRunner.app;type=application/octet-stream" \
+          -F "file=@TestRunner.app;type=application/octet-stream" \
           "$DEV"
 
         # Publish sample extension (contains test codeunit)
