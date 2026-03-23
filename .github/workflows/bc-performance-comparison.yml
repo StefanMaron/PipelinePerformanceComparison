@@ -865,7 +865,10 @@ jobs:
         done
         if ! docker compose logs bc 2>&1 | grep -q "Press Enter"; then
           echo "ERROR: BC did not start within 10 minutes"
-          echo "=== Last 100 lines of BC container logs ==="
+          echo "=== Entrypoint log file ==="
+          docker compose exec bc cat /tmp/entrypoint.log 2>&1 || echo "(container not running)"
+          docker compose cp bc:/tmp/entrypoint.log /tmp/entrypoint.log 2>/dev/null && cat /tmp/entrypoint.log || true
+          echo "=== Last 100 lines of container logs ==="
           docker compose logs bc 2>&1 | tail -100
           exit 1
         fi
