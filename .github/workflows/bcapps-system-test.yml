@@ -17,7 +17,7 @@ env:
   BC_VERSION: ${{ inputs.bc_version || '27.5.46862.48004' }}
   PLATFORM_VERSION: '27.0.46760'
   AL_TOOLS_VERSION: '16.2.28.57946'
-  BCAPPS_BRANCH: 'releases/26.0'
+  BCAPPS_TAG: 'releases/27.5/StrictMode'
   BC_ARTIFACT_BASE: 'https://bcartifacts-exdbf9fwegejdqak.b02.azurefd.net/sandbox'
 
 jobs:
@@ -49,8 +49,8 @@ jobs:
         STEP_START=$(date +%s.%N)
 
         # Clone BCApps System Application source
-        echo "Cloning microsoft/BCApps branch ${{ env.BCAPPS_BRANCH }}..."
-        git clone --depth 1 --branch ${{ env.BCAPPS_BRANCH }} --single-branch \
+        echo "Cloning microsoft/BCApps branch ${{ env.BCAPPS_TAG }}..."
+        git clone --depth 1 --branch ${{ env.BCAPPS_TAG }} --single-branch \
           https://github.com/microsoft/BCApps bcapps-temp &
         BCAPPS_PID=$!
 
