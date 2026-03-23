@@ -843,8 +843,11 @@ jobs:
         cd aldirectcompile
         BC_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/w1"
         printf "BC_ARTIFACT_URL=%s\nSA_PASSWORD=Passw0rd123!\n" "$BC_URL" > .env
+        docker compose down -v 2>/dev/null || true
         docker compose build --no-cache bc
         docker compose up -d
+        # Verify the image has our entrypoint
+        docker inspect aldirectcompile-bc --format='{{.Config.Entrypoint}}' 2>/dev/null || true
         echo "Waiting for BC (artifact download + compilation)..."
         for i in $(seq 1 120); do
           docker compose logs bc 2>&1 | grep -q "Press Enter" && { echo "BC ready after $((i*5))s"; break; }
