@@ -191,34 +191,56 @@ jobs:
     - name: Run AL tests via OData
       run: |
         STEP_START=$(date +%s.%N)
-        COMPANY_ID=$(curl -s --max-time 10 -u "admin:Admin123!" \
-          "http://localhost:7048/$INSTANCE/ODataV4/Company" | \
+        AUTH="admin:Admin123!"
+        ODATA="http://localhost:7048/$INSTANCE"
+
+        # Get company ID
+        COMPANY_ID=$(curl -s --max-time 10 -u "$AUTH" \
+          "$ODATA/ODataV4/Company" | \
           python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])")
-        API="http://localhost:7052/$INSTANCE/api/custom/automation/v1.0/companies($COMPANY_ID)"
+        echo "Company ID: $COMPANY_ID"
 
-        RID=$(curl -s --max-time 10 -u "admin:Admin123!" -X POST \
-          -H "Content-Type: application/json" -d '{"CodeunitId": 50002}' \
-          "$API/codeunitRunRequests" | python3 -c "import sys,json; print(json.load(sys.stdin)['Id'])")
+        # Use the Test Runner API (published by entrypoint) on OData port
+        API="$ODATA/api/custom/automation/v1.0/companies($COMPANY_ID)"
 
-        curl -s --max-time 120 -u "admin:Admin123!" -X POST \
+        # Create a run request for test codeunit 50001 (Sample Data Tests PPC)
+        echo "Creating test run request for codeunit 50001..."
+        RID=$(curl -s --max-time 10 -u "$AUTH" -X POST \
+          -H "Content-Type: application/json" -d '{"CodeunitId": 50001}' \
+          "$API/codeunitRunRequests" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Id',d.get('id','')))")
+        echo "Run request ID: $RID"
+
+        # Execute the test
+        echo "Executing tests..."
+        curl -s --max-time 120 -u "$AUTH" -X POST \
           -H "Content-Type: application/json" \
           "$API/codeunitRunRequests($RID)/Microsoft.NAV.runCodeunit" > /dev/null
 
-        STATUS=$(curl -s --max-time 10 -u "admin:Admin123!" \
+        # Check status
+        STATUS=$(curl -s --max-time 10 -u "$AUTH" \
           "$API/codeunitRunRequests($RID)" | \
-          python3 -c "import sys,json;d=json.load(sys.stdin);print(d['Status'])")
+          python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('Status',d.get('status','Unknown')))")
         echo "Test status: $STATUS"
 
-        curl -s --max-time 10 -u "admin:Admin123!" "$API/logEntries" | python3 -c "
+        # Read test results from log entries
+        curl -s --max-time 10 -u "$AUTH" "$API/logEntries" | python3 -c "
         import sys, json
         data = json.load(sys.stdin)
         p=f=0
         for e in data['value']:
-            if e['functionName']:
-                if e['success']: p+=1; print(f'  ✓ {e[\"codeunitName\"]}::{e[\"functionName\"]}')
-                else: f+=1; print(f'  ✗ {e[\"codeunitName\"]}::{e[\"functionName\"]}')
+            fn = e.get('functionName', '')
+            if fn:
+                cu = e.get('codeunitName', '')
+                ok = e.get('success', False)
+                if ok: p+=1; print(f'  ✓ {cu}::{fn}')
+                else:
+                    f+=1
+                    err = e.get('errorMessage', '')
+                    print(f'  ✗ {cu}::{fn}: {err}')
         print(f'\nPassed: {p}, Failed: {f}')
-        if f>0: exit(1)
+        if p == 0 and f == 0:
+            print('WARNING: No test results found')
+        if f > 0: exit(1)
         "
         STEP_END=$(date +%s.%N)
         TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
