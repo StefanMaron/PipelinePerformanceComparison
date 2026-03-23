@@ -165,28 +165,15 @@ jobs:
         find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp {} mock-assemblies/ \; 2>/dev/null
         echo "Mock assemblies: $(ls mock-assemblies/*.dll 2>/dev/null | wc -l) DLLs"
 
-        # Copy only specific service DLLs needed for assembly probing
-        # (full set causes NullReferenceException in CecilDotNetTypeLoader
-        #  from Windows-specific type forwarding chains)
-        SVC_DIR=$(find bc-artifacts/platform/ServiceTier -name "Microsoft.Dynamics.Nav.Server.dll" -printf "%h\n" 2>/dev/null | head -1)
-        if [ -n "$SVC_DIR" ]; then
-          # Only copy the framework/client DLLs the compiler needs for dotnet interop
-          for dll in \
-            "Microsoft.Dynamics.Framework.UI.Client.dll" \
-            "Newtonsoft.Json.dll" \
-            "DocumentFormat.OpenXml.dll" \
-            "Microsoft.Dynamics.Nav.Types.dll" \
-            "Microsoft.Dynamics.Nav.Ncl.dll"; do
-            [ -f "$SVC_DIR/$dll" ] && cp "$SVC_DIR/$dll" service-dlls/
-          done
-          echo "Service DLLs (selective): $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
-        fi
-
-        # Build assembly probing paths — .NET runtime first, then mock assemblies
+        # Build assembly probing paths
+        # NOTE: Do NOT include BC service DLLs — they're Windows builds and cause
+        # CecilDotNetTypeLoader to crash on type forwarding chains.
+        # The .NET 8 runtime + mock assemblies are sufficient for System App compilation.
         DOTNET_RT=$(find /usr/share/dotnet/shared/Microsoft.NETCore.App -maxdepth 1 -name "8.*" | sort -V | tail -1)
-        PROBING="$(pwd)/mock-assemblies"
-        [ -n "$DOTNET_RT" ] && PROBING="$DOTNET_RT,$PROBING"
-        [ "$(ls service-dlls/*.dll 2>/dev/null | wc -l)" -gt 0 ] && PROBING="$PROBING,$(pwd)/service-dlls"
+        ASPNET_RT=$(find /usr/share/dotnet/shared/Microsoft.AspNetCore.App -maxdepth 1 -name "8.*" | sort -V | tail -1)
+        PROBING="$DOTNET_RT"
+        [ -n "$ASPNET_RT" ] && PROBING="$PROBING,$ASPNET_RT"
+        PROBING="$PROBING,$(pwd)/mock-assemblies"
         echo "PROBING_PATHS=$PROBING" >> $GITHUB_ENV
         echo "Assembly probing: $PROBING"
 
