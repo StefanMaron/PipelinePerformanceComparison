@@ -837,39 +837,69 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
+    - name: Download BC artifacts (on host)
+      run: |
+        STEP_START=$(date +%s.%N)
+        BC_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/w1"
+        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/platform"
+        DEST="$(pwd)/bc-artifacts"
+        mkdir -p "$DEST/app" "$DEST/platform"
+
+        echo "Downloading app: $BC_URL"
+        curl -sSL "$BC_URL" -o "$DEST/bc-app.zip"
+        unzip -qo "$DEST/bc-app.zip" -d "$DEST/app"
+        rm -f "$DEST/bc-app.zip"
+
+        echo "Downloading platform: $PLATFORM_URL"
+        curl -sSL "$PLATFORM_URL" -o "$DEST/bc-platform.zip"
+        unzip -qo "$DEST/bc-platform.zip" 'ServiceTier/*' 'ModernDev/*' -d "$DEST/platform" 2>/dev/null || \
+          unzip -qo "$DEST/bc-platform.zip" -d "$DEST/platform"
+        rm -f "$DEST/bc-platform.zip"
+
+        echo "Artifacts: $(du -sh "$DEST" | cut -f1)"
+        STEP_END=$(date +%s.%N)
+        echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
     - name: Start BC service tier
       run: |
         STEP_START=$(date +%s.%N)
         cd aldirectcompile
-        BC_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/w1"
-        printf "BC_ARTIFACT_URL=%s\nSA_PASSWORD=Passw0rd123!\n" "$BC_URL" > .env
-        docker compose down -v 2>/dev/null || true
+
+        # Point to pre-downloaded artifacts via bind mount override
+        ARTIFACTS_PATH="$(cd .. && pwd)/bc-artifacts"
+        echo "SA_PASSWORD=Passw0rd123!" > .env
+
+        # Create a compose override that uses bind mount instead of Docker volume
+        cat > docker-compose.override.yml << OVERRIDE
+        services:
+          sql:
+            volumes:
+              - ${ARTIFACTS_PATH}:/bc/artifacts:ro
+          bc:
+            volumes:
+              - ${ARTIFACTS_PATH}:/bc/artifacts
+        OVERRIDE
+
         docker compose build --no-cache bc
         docker compose up -d
-        # Verify the image has our entrypoint
-        docker inspect aldirectcompile-bc --format='{{.Config.Entrypoint}}' 2>/dev/null || true
-        echo "Waiting for BC (artifact download + compilation)..."
+
+        echo "Waiting for BC (DB restore + compilation)..."
         for i in $(seq 1 120); do
           docker compose logs bc 2>&1 | grep -q "Press Enter" && { echo "BC ready after $((i*5))s"; break; }
           if [ $((i % 6)) -eq 0 ]; then
             LAST=$(docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[artifacts\]\|HttpSysStub\|Exception\|ERROR" | tail -1)
             echo "  $((i*5))s: $LAST"
           fi
-          # Bail early if container died
-          if ! docker compose ps bc --format json 2>/dev/null | grep -q '"running"'; then
-            echo "ERROR: BC container is not running"
-            docker compose logs bc 2>&1 | tail -20
+          if ! docker compose ps bc 2>/dev/null | grep -q "Up"; then
+            echo "ERROR: BC container died"
+            docker compose logs bc 2>&1 | tail -50
             exit 1
           fi
           sleep 5
         done
         if ! docker compose logs bc 2>&1 | grep -q "Press Enter"; then
-          echo "ERROR: BC did not start within 10 minutes"
-          echo "=== Entrypoint log file ==="
-          docker compose exec bc cat /tmp/entrypoint.log 2>&1 || echo "(container not running)"
-          docker compose cp bc:/tmp/entrypoint.log /tmp/entrypoint.log 2>/dev/null && cat /tmp/entrypoint.log || true
-          echo "=== Last 100 lines of container logs ==="
-          docker compose logs bc 2>&1 | tail -100
+          echo "ERROR: BC did not start"
+          docker compose logs bc 2>&1 | tail -50
           exit 1
         fi
         INSTANCE=$(docker compose exec bc grep -oP 'ServerInstance" value="\K[^"]+' /bc/service/CustomSettings.config 2>/dev/null || echo "InstanceName")
