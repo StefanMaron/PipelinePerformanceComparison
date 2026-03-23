@@ -803,7 +803,7 @@ jobs:
 # ============================================================================
   linux-full:
     runs-on: ubuntu-latest
-    name: Linux - Full Pipeline
+    name: Linux - Full Pipeline (Headless)
     if: inputs.run_type == 'full-pipeline'
     outputs:
       total_duration: ${{ steps.record.outputs.total_duration }}
@@ -818,132 +818,55 @@ jobs:
     - name: Record start time
       run: echo "START_EPOCH=$(date +%s.%N)" >> $GITHUB_ENV
 
-    - name: Setup .NET
+    - name: Setup .NET and AL tools
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
 
-    - name: Install AL Linux tools
+    - name: Clone and build alDirectCompile
+      run: |
+        STEP_START=$(date +%s.%N)
+        git clone --depth 1 https://github.com/StefanMaron/alDirectCompile.git aldirectcompile
+        cd aldirectcompile/StartupHook
+        dotnet publish -c Release -o bin/Release/net8.0/publish
+        SQLCLIENT=$(find ~/.nuget/packages/microsoft.data.sqlclient -name "Microsoft.Data.SqlClient.dll" -path "*/unix/*" 2>/dev/null | head -1)
+        [ -n "$SQLCLIENT" ] && cp "$SQLCLIENT" bin/Release/net8.0/publish/
+        cd ../..
+        STEP_END=$(date +%s.%N)
+        echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Start BC service tier
+      run: |
+        STEP_START=$(date +%s.%N)
+        cd aldirectcompile
+        BC_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/w1"
+        printf "BC_ARTIFACT_URL=%s\nSA_PASSWORD=Passw0rd123!\n" "$BC_URL" > .env
+        docker compose build bc
+        docker compose up -d
+        echo "Waiting for BC (artifact download + compilation)..."
+        for i in $(seq 1 120); do
+          docker compose logs bc 2>&1 | grep -q "Press Enter" && { echo "BC ready after $((i*5))s"; break; }
+          sleep 5
+        done
+        docker compose logs bc 2>&1 | grep -q "Press Enter" || { docker compose logs bc | tail -30; exit 1; }
+        INSTANCE=$(docker compose exec bc grep -oP 'ServerInstance" value="\K[^"]+' /bc/service/CustomSettings.config 2>/dev/null || echo "InstanceName")
+        echo "INSTANCE=$INSTANCE" >> $GITHUB_ENV
+        cd ..
+        STEP_END=$(date +%s.%N)
+        CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
+        echo "CONTAINER_DURATION=$CONTAINER_DURATION" >> $GITHUB_ENV
+
+    - name: Install AL tools and get symbols
       run: |
         STEP_START=$(date +%s.%N)
         dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools.Linux \
-          --version ${{ env.AL_TOOLS_VERSION }}
+          --version ${{ env.AL_TOOLS_VERSION }} || true
         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+        mkdir -p .alpackages
+        docker run --rm -v aldirectcompile_bc-artifacts:/data -v $(pwd)/.alpackages:/out alpine \
+          sh -c 'cp $(find /data/platform/ModernDev -name System.app 2>/dev/null | head -1) /out/System.app'
         STEP_END=$(date +%s.%N)
-        SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "SETUP_DURATION=$SETUP_DURATION" >> $GITHUB_ENV
-
-    - name: Download BC symbol packages
-      run: |
-        STEP_START=$(date +%s.%N)
-        mkdir -p temp_packages .alpackages
-        BASE="${{ env.BC_SYMBOLS_BASE_URL }}"
-        VER="${{ env.BC_VERSION }}"
-        PVER="${{ env.PLATFORM_VERSION }}"
-
-        curl -f -L -s --retry 3 -o temp_packages/platform.nupkg \
-          "$BASE/microsoft.platform.symbols/$PVER/microsoft.platform.symbols.$PVER.nupkg"
-        curl -f -L -s --retry 3 -o temp_packages/systemapp.nupkg \
-          "$BASE/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f/$VER/microsoft.systemapplication.us.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f.$VER.nupkg"
-        curl -f -L -s --retry 3 -o temp_packages/baseapp.nupkg \
-          "$BASE/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972/$VER/microsoft.baseapplication.us.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972.$VER.nupkg"
-        curl -f -L -s --retry 3 -o temp_packages/app.nupkg \
-          "$BASE/microsoft.application.us.symbols/$VER/microsoft.application.us.symbols.$VER.nupkg"
-        curl -f -L -s --retry 3 -o temp_packages/bizfoundation.nupkg \
-          "$BASE/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837/$VER/microsoft.businessfoundation.us.symbols.f3552374-a1f2-4356-848e-196002525837.$VER.nupkg"
-
-        for pkg in temp_packages/*.nupkg; do
-          [ -s "$pkg" ] || continue
-          dir="temp_packages/$(basename "$pkg" .nupkg)"
-          mkdir -p "$dir"
-          unzip -q "$pkg" -d "$dir" 2>/dev/null || true
-        done
-        find temp_packages -name "*.app" -exec cp {} .alpackages/ \;
-        rm -rf temp_packages
-
-        STEP_END=$(date +%s.%N)
-        DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "DOWNLOAD_DURATION=$DOWNLOAD_DURATION" >> $GITHUB_ENV
-
-    - name: Clone BCApps System Application
-      if: inputs.compile_target == 'bcapps-system-app'
-      run: |
-        STEP_START=$(date +%s.%N)
-        echo "Cloning microsoft/BCApps branch ${{ env.BCAPPS_BRANCH }} (depth 1)..."
-        git clone --depth 1 --branch ${{ env.BCAPPS_BRANCH }} --single-branch \
-          https://github.com/microsoft/BCApps bcapps-temp
-        AL_COUNT=$(find bcapps-temp/src/System\ Application/App -name "*.al" | wc -l)
-        TEST_COUNT=$(find bcapps-temp/src/System\ Application/Test -name "*.al" | wc -l)
-        echo "System Application AL files: $AL_COUNT"
-        echo "System Application Test AL files: $TEST_COUNT"
-        STEP_END=$(date +%s.%N)
-        CLONE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "CLONE_DURATION=$CLONE_DURATION" >> $GITHUB_ENV
-
-    - name: Setup BC compiler folder (dotnet packages)
-      if: inputs.compile_target == 'bcapps-system-app'
-      run: |
-        STEP_START=$(date +%s.%N)
-
-        # Use the same BC artifact version as the container to avoid version mismatches
-        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/platform"
-        SIZE=$(curl -sI "$PLATFORM_URL" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\r')
-
-        # Download service DLLs, test toolkit apps, and mock assemblies in ONE pass
-        # Single EOCD parse + single HTTP range request for all three categories
-        DLLS_BASE="$RUNNER_TEMP/dlls"
-        SERVICE_PATH="$DLLS_BASE/Service"
-        TT_APPS_PATH="$(pwd)/test-toolkit-apps"
-        MOCK_PATH="$(pwd)/mock-assemblies"
-        mkdir -p "$SERVICE_PATH" "$TT_APPS_PATH" "$MOCK_PATH"
-        python3 scripts/download-dotnetpackages.py "$PLATFORM_URL" "$SIZE" \
-          "$SERVICE_PATH" service-dlls \
-          "$TT_APPS_PATH" test-toolkit \
-          "$MOCK_PATH" mock-assemblies
-        echo "Mock assemblies: $(find "$MOCK_PATH" -name "*.dll" | wc -l) DLLs"
-        echo "Test toolkit apps: $(find "$TT_APPS_PATH" -name "*.app" | wc -l) apps"
-
-        # Remove subdirectories that BcContainerHelper removes
-        for sub in Management WindowsServiceInstaller SideServices; do
-          [ -d "$SERVICE_PATH/$sub" ] && rm -rf "$SERVICE_PATH/$sub" && echo "Removed: $sub"
-        done
-
-        # Copy DocumentFormat.OpenXml.dll to OpenXML folder
-        OPENXML_PATH="$DLLS_BASE/OpenXML"
-        mkdir -p "$OPENXML_PATH"
-        find "$SERVICE_PATH" -name "DocumentFormat.OpenXml.dll" -exec cp {} "$OPENXML_PATH/" \; 2>/dev/null
-
-        # Build probing paths: OpenXML, .NET ref pack, Service, Mock assemblies
-        PROBING_PATHS=""
-        [ -d "$OPENXML_PATH" ] && PROBING_PATHS="$OPENXML_PATH"
-
-        # Find .NET 8 ref pack (safer than runtime DLLs for Mono.Cecil)
-        REF_PACK=$(find /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref -maxdepth 1 -type d -name "8.*" 2>/dev/null | sort -V | tail -1)
-        if [ -n "$REF_PACK" ] && [ -d "$REF_PACK/ref/net8.0" ]; then
-          REF_PATH="$REF_PACK/ref/net8.0"
-          PROBING_PATHS="$PROBING_PATHS,$REF_PATH"
-          echo "Ref pack: $REF_PATH ($(find "$REF_PATH" -name "*.dll" | wc -l) DLLs)"
-        fi
-
-        [ -d "$SERVICE_PATH" ] && PROBING_PATHS="$PROBING_PATHS,$SERVICE_PATH"
-        [ -d "$MOCK_PATH" ] && PROBING_PATHS="$PROBING_PATHS,$MOCK_PATH"
-        # Remove leading comma if OpenXML was empty
-        PROBING_PATHS=$(echo "$PROBING_PATHS" | sed 's/^,//')
-
-        echo "assemblyProbingPaths: $PROBING_PATHS"
-        echo "DOTNET_PATH=$PROBING_PATHS" >> $GITHUB_ENV
-
-        STEP_END=$(date +%s.%N)
-        DOTNET_DL_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "DOTNET_DL_DURATION=$DOTNET_DL_DURATION" >> $GITHUB_ENV
-        echo "Compiler folder setup took: $DOTNET_DL_DURATION seconds"
-
-    - name: Copy test toolkit apps to symbol cache
-      run: |
-        # Test toolkit apps were already downloaded in the combined range download above
-        echo "Test toolkit apps:"
-        ls -la test-toolkit-apps/
-        cp test-toolkit-apps/*.app .alpackages/ 2>/dev/null || true
+        echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
     - name: Compile AL extension
       env:
@@ -951,515 +874,87 @@ jobs:
         COMPlus_ReadyToRun: '0'
       run: |
         STEP_START=$(date +%s.%N)
-        SYMBOLS_PATH="$(pwd)/.alpackages"
-        COMPILE_TARGET="${{ inputs.compile_target }}"
-
-        if [ "$COMPILE_TARGET" = "bcapps-system-app" ]; then
-          PROJECT_PATH="bcapps-temp/src/System Application/App"
-          echo "Compiling: BCApps System Application"
-
-          # Fix Windows backslash path separators
-          find "$PROJECT_PATH" -name "*.al" -exec grep -li 'controladdin\|ControlAddIn' {} + | while IFS= read -r f; do sed -i 's|\\|/|g' "$f"; done
-
-          EXTRA_ARGS=""
-          if [ -n "$DOTNET_PATH" ]; then
-            EXTRA_ARGS="/assemblyProbingPaths:$DOTNET_PATH"
-          fi
-
-          set +e
-          AL compile /project:"$PROJECT_PATH" /packagecachepath:"$SYMBOLS_PATH" $EXTRA_ARGS 2>&1
-          AL_EXIT=$?
-          set -e
-        else
-          echo "Compiling: sample extension"
-          AL compile /project:"." /packagecachepath:"$SYMBOLS_PATH"
-          AL_EXIT=$?
-        fi
-
+        AL compile /project:. /packagecachepath:.alpackages
+        echo "Compiled: $(ls -la *.app 2>/dev/null)"
         STEP_END=$(date +%s.%N)
         COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
         echo "COMPILE_DURATION=$COMPILE_DURATION" >> $GITHUB_ENV
-        echo "Compilation took: $COMPILE_DURATION seconds"
 
-        if [ $AL_EXIT -ne 0 ]; then
-          echo "ERROR: AL compiler exited with code $AL_EXIT"
-          exit $AL_EXIT
-        fi
+    - name: Publish extension to BC
+      run: |
+        APP_FILE=$(find . -maxdepth 1 -name "*.app" | head -1)
+        curl -s -o /dev/null -w "Publish: HTTP %{http_code}\n" --max-time 30 \
+          -u "admin:Admin123!" -X POST \
+          -F "file=@$APP_FILE;type=application/octet-stream" \
+          "http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=synchronize"
 
-        echo "Compiled app files:"
-        if [ "$COMPILE_TARGET" = "bcapps-system-app" ]; then
-          find "$PROJECT_PATH" -maxdepth 1 -name "*.app" -exec ls -la {} \;
-          find "$PROJECT_PATH" -maxdepth 1 -name "*.app" -exec cp {} . \;
-        else
-          ls -la *.app 2>/dev/null || echo "none found"
-        fi
-
-    - name: Compile System Application Test
-      if: inputs.compile_target == 'bcapps-system-app'
-      env:
-        DOTNET_ReadyToRun: '0'
-        COMPlus_ReadyToRun: '0'
+    - name: Run AL tests via OData
       run: |
         STEP_START=$(date +%s.%N)
-        SYMBOLS_PATH="$(pwd)/.alpackages"
+        COMPANY_ID=$(curl -s --max-time 10 -u "admin:Admin123!" \
+          "http://localhost:7048/$INSTANCE/ODataV4/Company" | \
+          python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])")
+        API="http://localhost:7052/$INSTANCE/api/custom/automation/v1.0/companies($COMPANY_ID)"
 
-        # Copy compiled System Application .app to .alpackages for symbol resolution
-        find bcapps-temp/src/System\ Application/App -maxdepth 1 -name "*.app" -exec cp {} .alpackages/ \;
-        echo "System Application .app copied to .alpackages"
+        RID=$(curl -s --max-time 10 -u "admin:Admin123!" -X POST \
+          -H "Content-Type: application/json" -d '{"CodeunitId": 50002}' \
+          "$API/codeunitRunRequests" | python3 -c "import sys,json; print(json.load(sys.stdin)['Id'])")
 
-        PROJECT_PATH="bcapps-temp/src/System Application/Test"
+        curl -s --max-time 120 -u "admin:Admin123!" -X POST \
+          -H "Content-Type: application/json" \
+          "$API/codeunitRunRequests($RID)/Microsoft.NAV.runCodeunit" > /dev/null
 
-        # Fix Windows backslash path separators
-        find "$PROJECT_PATH" -name "*.al" -exec grep -li 'controladdin\|ControlAddIn' {} + | while IFS= read -r f; do sed -i 's|\\|/|g' "$f"; done
+        STATUS=$(curl -s --max-time 10 -u "admin:Admin123!" \
+          "$API/codeunitRunRequests($RID)" | \
+          python3 -c "import sys,json;d=json.load(sys.stdin);print(d['Status'])")
+        echo "Test status: $STATUS"
 
-        EXTRA_ARGS=""
-        if [ -n "$DOTNET_PATH" ]; then
-          EXTRA_ARGS="/assemblyProbingPaths:$DOTNET_PATH"
-        fi
-
-        echo "Compiling: BCApps System Application Test"
-        set +e
-        AL compile /project:"$PROJECT_PATH" /packagecachepath:"$SYMBOLS_PATH" $EXTRA_ARGS 2>&1
-        AL_EXIT=$?
-        set -e
-
-        STEP_END=$(date +%s.%N)
-        TEST_COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "TEST_COMPILE_DURATION=$TEST_COMPILE_DURATION" >> $GITHUB_ENV
-        echo "System Application Test compilation took: $TEST_COMPILE_DURATION seconds"
-
-        if [ $AL_EXIT -ne 0 ]; then
-          echo "ERROR: System Application Test compilation failed with code $AL_EXIT"
-          exit $AL_EXIT
-        fi
-
-        # Extract extension ID from app.json for test execution
-        SYSAPP_TEST_ID=$(python3 -c "import json; print(json.load(open('$PROJECT_PATH/app.json'))['id'])")
-        echo "SYSAPP_TEST_ID=$SYSAPP_TEST_ID" >> $GITHUB_ENV
-        echo "System Application Test extension ID: $SYSAPP_TEST_ID"
-
-        echo "Compiled test app files:"
-        find "$PROJECT_PATH" -maxdepth 1 -name "*.app" -exec ls -la {} \;
-        find "$PROJECT_PATH" -maxdepth 1 -name "*.app" -exec cp {} . \;
-
-    - name: Pull BC Wine base image
-      run: |
-        STEP_START=$(date +%s.%N)
-        docker pull stefanmaronbc/bc-wine-base:latest
-        STEP_END=$(date +%s.%N)
-        IMAGE_PULL_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "IMAGE_PULL_DURATION=$IMAGE_PULL_DURATION" >> $GITHUB_ENV
-
-    - name: Clone BCDevOnLinux and build container
-      run: |
-        STEP_START=$(date +%s.%N)
-        git clone --branch ${{ env.BCDEV_BRANCH }} --depth 1 ${{ env.BCDEV_REPO }} bcdev-temp
-        cd bcdev-temp
-
-        # Fix: compose.yml mounts ./secret.key but only config/secret.key exists
-        cp config/secret.key secret.key
-
-        # Override .env to use w1 (matching our symbols) instead of hardcoded de
-        printf 'SA_PASSWORD=P@ssw0rd123!\nBC_ARTIFACT_URL=\n' > .env
-
-        # Ensure ADMIN_PASSWORD is explicitly passed to the BC container
-        # (compose.yml doesn't include it in the environment section by default)
-        if ! grep -q 'ADMIN_PASSWORD' compose.yml; then
-          sed -i '/WINEDEBUG=-all/a\      - ADMIN_PASSWORD=Admin123!' compose.yml
-        fi
-
-        docker compose build
-        STEP_END=$(date +%s.%N)
-        CONTAINER_BUILD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "CONTAINER_BUILD_DURATION=$CONTAINER_BUILD_DURATION" >> $GITHUB_ENV
-
-    - name: Start BC container and wait for healthy
-      run: |
-        STEP_START=$(date +%s.%N)
-        cd bcdev-temp
-        docker compose up -d
-
-        echo "Waiting for BC container to be healthy (up to 20 minutes)..."
-        CONTAINER_ID=$(docker compose ps -q | head -n 1)
-        MAX_WAIT=1200
-        ELAPSED=0
-        while [ $ELAPSED -lt $MAX_WAIT ]; do
-          STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_ID" 2>/dev/null || echo "unknown")
-          [ "$STATUS" = "healthy" ] && { echo "Container healthy after ${ELAPSED}s"; break; }
-          [ "$STATUS" = "unhealthy" ] && { echo "Container unhealthy - printing logs:"; docker compose logs --tail=50; }
-          echo "Status: $STATUS (${ELAPSED}s elapsed)"
-          sleep 15
-          ELAPSED=$((ELAPSED + 15))
-        done
-
-        STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_ID" 2>/dev/null || echo "unknown")
-        if [ "$STATUS" != "healthy" ]; then
-          echo "ERROR: container did not become healthy within ${MAX_WAIT}s"
-          docker compose logs
-          exit 1
-        fi
-
-        STEP_END=$(date +%s.%N)
-        CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "CONTAINER_DURATION=$CONTAINER_DURATION" >> $GITHUB_ENV
-        cd ..
-
-    - name: Fix BC auth config (NavUserPassword)
-      run: |
-        cd bcdev-temp
-        BC_CONTAINER=$(docker compose ps -q bc)
-        SERVICE_CONFIG="/root/.local/share/wineprefixes/bc1/drive_c/Program Files/Microsoft Dynamics NAV/260/Service/CustomSettings.config"
-        HOME_CONFIG="/home/CustomSettings.config"
-
-        echo "Checking current auth config..."
-        docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$SERVICE_CONFIG" 2>&1 | head -1
-
-        echo "Checking source config at /home/..."
-        docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$HOME_CONFIG" 2>&1 | head -1
-
-        # Fix BOTH config files so restart doesn't revert the change
-        echo "Fixing: Windows -> NavUserPassword in BOTH config files"
-        docker exec "$BC_CONTAINER" sed -i 's/value="Windows"/value="NavUserPassword"/' "$SERVICE_CONFIG"
-        docker exec "$BC_CONTAINER" sed -i 's/value="Windows"/value="NavUserPassword"/' "$HOME_CONFIG"
-
-        echo "Restarting BC server to apply config change..."
-        # Kill BC server — container restarts via unless-stopped, entrypoint re-runs
-        # but now /home/CustomSettings.config has NavUserPassword so the force-copy is correct
-        docker exec "$BC_CONTAINER" pkill -f "Microsoft.Dynamics.Nav.Server" || true
-        sleep 5
-
-        # Container might get a new ID after restart
-        for i in $(seq 1 60); do
-          CONTAINER_ID=$(docker compose ps -q bc 2>/dev/null || echo "")
-          if [ -n "$CONTAINER_ID" ]; then
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_ID" 2>/dev/null || echo "unknown")
-            [ "$STATUS" = "healthy" ] && { echo "Container healthy again after ${i}x15s"; break; }
-            echo "  Waiting for restart... ($STATUS)"
-          else
-            echo "  Waiting for container to come back..."
-          fi
-          sleep 15
-        done
-
-        # Re-get container ID after restart
-        BC_CONTAINER=$(docker compose ps -q bc)
-        echo "Verifying fix:"
-        docker exec "$BC_CONTAINER" grep 'ClientServicesCredentialType' "$SERVICE_CONFIG" 2>&1 | head -1
-        cd ..
-
-    - name: Publish test toolkit apps to BC container
-      run: |
-        set +e  # Don't fail on individual publish errors
-        STEP_START=$(date +%s.%N)
-        PUBLISH_URL="http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
-
-        # Publish in dependency order (topological sort)
-        # Apps 1-5: no deps or deps on earlier items
-        # App 6: Business Foundation Test Libraries depends on System Application + Business Foundation (both pre-installed)
-        # App 7: System Application Test Library depends on System Application (pre-installed) + Any
-        # App 8: Tests-TestLibraries depends on System Application Test Library + Library Variable Storage + Permissions Mock + Business Foundation Test Libraries
-        TOOLKIT_APPS=(
-          "Microsoft_Any.app"
-          "Microsoft_Library Assert.app"
-          "Microsoft_Library Variable Storage.app"
-          "Microsoft_Test Runner.app"
-          "Microsoft_Permissions Mock.app"
-          "Microsoft_Business Foundation Test Libraries.app"
-          "Microsoft_System Application Test Library.app"
-          "Microsoft_Tests-TestLibraries.app"
-        )
-
-        PUBLISHED=0
-        FAILED=0
-        for app in "${TOOLKIT_APPS[@]}"; do
-          APP_PATH="test-toolkit-apps/$app"
-          if [ -f "$APP_PATH" ]; then
-            echo "Publishing: $app ($(stat -c%s "$APP_PATH" 2>/dev/null || echo '?') bytes)"
-            # Use 120s timeout; retry once on connection failure
-            for attempt in 1 2; do
-              HTTP_CODE=$(curl -s -m 120 -o /tmp/publish-response.txt -w "%{http_code}" \
-                -u "admin:Admin123!" -F "file=@$APP_PATH" "$PUBLISH_URL" 2>/dev/null)
-              CURL_EXIT=$?
-              [ "$CURL_EXIT" = "0" ] && break
-              echo "  curl exit $CURL_EXIT on attempt $attempt, waiting 10s..."
-              sleep 10
-            done
-            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
-              echo "  → OK (HTTP $HTTP_CODE)"
-              PUBLISHED=$((PUBLISHED + 1))
-            else
-              echo "  → FAILED (HTTP $HTTP_CODE, curl exit $CURL_EXIT)"
-              cat /tmp/publish-response.txt 2>/dev/null | head -5
-              FAILED=$((FAILED + 1))
-            fi
-            # Brief pause between publishes to let BC process schema sync
-            sleep 3
-          else
-            echo "WARNING: $app not found in test-toolkit-apps/, skipping"
-          fi
-        done
-
-        echo ""
-        echo "Published $PUBLISHED test toolkit apps ($FAILED failed)"
-        STEP_END=$(date +%s.%N)
-        TOOLKIT_PUBLISH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "TOOLKIT_PUBLISH_DURATION=$TOOLKIT_PUBLISH_DURATION" >> $GITHUB_ENV
-
-        # Fail only if zero apps were published
-        if [ "$PUBLISHED" = "0" ]; then
-          echo "ERROR: No test toolkit apps published"
-          exit 1
-        fi
-
-    - name: Publish compiled apps to BC container
-      run: |
-        set +e
-        PUBLISH_URL="http://localhost:7049/BC/dev/apps?tenant=default&SchemaUpdateMode=synchronize&DependencyPublishingOption=default"
-        COMPILE_TARGET="${{ inputs.compile_target }}"
-
-        publish_app() {
-          local label=$1 app_path=$2
-          echo "Publishing $label: $(basename "$app_path") ($(stat -c%s "$app_path" 2>/dev/null || echo '?') bytes)"
-          for attempt in 1 2; do
-            HTTP_CODE=$(curl -s -m 120 -o /tmp/publish-response.txt -w "%{http_code}" \
-              -u "admin:Admin123!" -F "file=@$app_path" "$PUBLISH_URL" 2>/dev/null)
-            CURL_EXIT=$?
-            [ "$CURL_EXIT" = "0" ] && break
-            echo "  curl exit $CURL_EXIT on attempt $attempt, waiting 10s..."
-            sleep 10
-          done
-          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
-            echo "  → OK (HTTP $HTTP_CODE)"
-            return 0
-          else
-            echo "  → FAILED (HTTP $HTTP_CODE, curl exit $CURL_EXIT)"
-            cat /tmp/publish-response.txt 2>/dev/null | head -5
-            return 1
-          fi
-        }
-
-        if [ "$COMPILE_TARGET" = "bcapps-system-app" ]; then
-          # Publish System Application (compiled from source)
-          SYSAPP_FILE=$(find bcapps-temp/src/System\ Application/App -maxdepth 1 -name "*.app" 2>/dev/null | head -1)
-          if [ -z "$SYSAPP_FILE" ]; then
-            SYSAPP_FILE=$(find . -maxdepth 1 -name "*System*Application*.app" -not -name "*Test*" 2>/dev/null | head -1)
-          fi
-          if [ -n "$SYSAPP_FILE" ]; then
-            publish_app "System Application" "$SYSAPP_FILE" || true
-            sleep 5
-          else
-            echo "WARNING: System Application .app not found, skipping"
-          fi
-
-          # Publish System Application Test (compiled from source)
-          TESTAPP_FILE=$(find bcapps-temp/src/System\ Application/Test -maxdepth 1 -name "*.app" 2>/dev/null | head -1)
-          if [ -z "$TESTAPP_FILE" ]; then
-            TESTAPP_FILE=$(find . -maxdepth 1 -name "*System*Application*Test*.app" 2>/dev/null | head -1)
-          fi
-          if [ -n "$TESTAPP_FILE" ]; then
-            publish_app "System Application Test" "$TESTAPP_FILE" || exit 1
-          else
-            echo "ERROR: System Application Test .app not found"
-            exit 1
-          fi
-        else
-          # Publish sample extension
-          APP_FILE=$(find . -maxdepth 1 -name "*.app" | head -n 1)
-          if [ -z "$APP_FILE" ]; then echo "ERROR: no .app file found"; exit 1; fi
-          publish_app "Sample Extension" "$APP_FILE" || exit 1
-        fi
-
-    - name: Wait for OData API readiness
-      run: |
-        echo "Waiting for BC OData API to be ready..."
-        # Try both Basic and NTLM auth methods
-        for i in $(seq 1 90); do
-          # Try Basic auth first
-          RESP=$(curl -s -o /dev/null -w "%{http_code}" -u "admin:Admin123!" \
-            "http://localhost:7048/BC/api/v2.0/companies" 2>/dev/null || echo "000")
-          if [ "$RESP" = "200" ]; then
-            echo "OData API ready (Basic auth) after $((i * 5))s"
-            echo "ODATA_AUTH=basic" >> $GITHUB_ENV
-            break
-          fi
-          # Try NTLM auth as fallback
-          RESP_NTLM=$(curl -s -o /dev/null -w "%{http_code}" --ntlm \
-            -u "admin:Admin123!" "http://localhost:7048/BC/api/v2.0/companies" 2>/dev/null || echo "000")
-          if [ "$RESP_NTLM" = "200" ]; then
-            echo "OData API ready (NTLM auth) after $((i * 5))s"
-            RESP="200"
-            echo "ODATA_AUTH=ntlm" >> $GITHUB_ENV
-            break
-          fi
-          if [ "$i" -le 5 ] || [ "$((i % 15))" = "0" ]; then
-            echo "  Attempt $i: Basic=$RESP NTLM=$RESP_NTLM"
-          fi
-          sleep 5
-        done
-        if [ "$RESP" != "200" ]; then
-          echo "ERROR: OData API not ready after 7.5 minutes"
-          echo "Falling back to docker exec test runner..."
-          echo "ODATA_AUTH=docker-exec" >> $GITHUB_ENV
-        fi
-
-    - name: Run AL tests via OData API
-      run: |
-        STEP_START=$(date +%s.%N)
-        AUTH_MODE="${ODATA_AUTH:-basic}"
-        COMPILE_TARGET="${{ inputs.compile_target }}"
-        echo "Using auth mode: $AUTH_MODE"
-        echo "Compile target: $COMPILE_TARGET"
-
-        if [ "$COMPILE_TARGET" = "bcapps-system-app" ]; then
-          # For System Application Tests, use the test runner OData endpoint
-          # The Test Runner service page runs all test codeunits in an extension
-          echo "Running System Application Tests via OData test runner..."
-
-          if [ "$AUTH_MODE" = "docker-exec" ]; then
-            echo "Using docker exec fallback for System App Tests..."
-            cd bcdev-temp
-            BC_CONTAINER=$(docker compose ps -q bc)
-            docker exec "$BC_CONTAINER" pwsh -Command "
-              \$ErrorActionPreference = 'Stop'
-              \$servicePath = '/root/.local/share/wineprefixes/bc1/drive_c/Program Files/Microsoft Dynamics NAV/260/Service'
-              if (Test-Path \"\$servicePath/Microsoft.Dynamics.Nav.Management.psd1\") {
-                Import-Module \"\$servicePath/Microsoft.Dynamics.Nav.Management.psd1\" -Force
-                Write-Host 'BC admin module loaded'
-                # Get installed extensions to verify System App Test is published
-                \$extensions = Get-NAVAppInfo -ServerInstance BC
-                Write-Host \"Installed extensions: \$(\$extensions.Count)\"
-                \$extensions | Where-Object { \$_.Name -like '*System*' -or \$_.Name -like '*Test*' } | ForEach-Object {
-                  Write-Host \"  \$(\$_.Name) v\$(\$_.Version) - \$(\$_.ExtensionScope)\"
-                }
-                # Run a sample test codeunit from System Application Test (132450 = 'URI Test')
-                try {
-                  Invoke-NAVCodeunit -ServerInstance BC -CodeunitId 132450
-                  Write-Host 'System Application Test codeunit 132450 executed successfully'
-                } catch {
-                  Write-Host \"Test execution failed: \$_\"
-                  Write-Host 'Attempting alternative test codeunit...'
-                  try {
-                    Invoke-NAVCodeunit -ServerInstance BC -CodeunitId 132511
-                    Write-Host 'System Application Test codeunit 132511 executed successfully'
-                  } catch {
-                    Write-Host \"Alternative test also failed: \$_\"
-                    exit 1
-                  }
-                }
-              } else {
-                Write-Host 'ERROR: BC admin module not found'
-                exit 1
-              }
-            " 2>&1
-            cd ..
-          else
-            # Try running tests via OData - use the test runner codeunit
-            pwsh -Command "
-              \$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes('admin:Admin123!'))
-              \$headers = @{ Authorization = \"Basic \$cred\"; 'Content-Type' = 'application/json' }
-              \$baseUrl = 'http://localhost:7048/BC'
-
-              # Verify extensions are installed
-              Write-Host 'Checking installed extensions...'
-              try {
-                \$extensions = Invoke-RestMethod -Uri \"\$baseUrl/api/microsoft/automation/v2.0/companies?\\`\$top=1\" -Headers \$headers
-                \$companyId = \$extensions.value[0].id
-                Write-Host \"Company ID: \$companyId\"
-                \$apps = Invoke-RestMethod -Uri \"\$baseUrl/api/microsoft/automation/v2.0/companies(\$companyId)/extensions\" -Headers \$headers
-                \$apps.value | Where-Object { \$_.displayName -like '*System*' -or \$_.displayName -like '*Test*' } | ForEach-Object {
-                  Write-Host \"  \$(\$_.displayName) v\$(\$_.versionMajor).\$(\$_.versionMinor)\"
-                }
-              } catch {
-                Write-Host \"Extension check failed: \$_\"
-              }
-
-              # Run test codeunit 132450 (URI Test) as a smoke test
-              Write-Host 'Running System Application Test via test runner page...'
-              try {
-                \$runResult = Invoke-RestMethod -Uri \"\$baseUrl/ODataV4/Company('CRONUS International Ltd.')/CodeunitRunRequests\" \
-                  -Method Post -Headers \$headers \
-                  -Body ('{\"CodeunitId\": 132450}' | ConvertFrom-Json | ConvertTo-Json)
-                Write-Host \"Test result: \$(\$runResult | ConvertTo-Json -Depth 3)\"
-              } catch {
-                Write-Host \"OData test runner failed: \$_, trying direct API...\"
-                # Fallback: just verify the apps are installed
-                Write-Host 'System Application Test apps published successfully (test execution skipped)'
-              }
-            " 2>&1
-          fi
-        else
-          # Sample extension tests
-          if [ "$AUTH_MODE" = "docker-exec" ]; then
-            echo "OData auth failed - running tests via docker exec + Invoke-NavCodeunit"
-            cd bcdev-temp
-            BC_CONTAINER=$(docker compose ps -q bc)
-            docker exec "$BC_CONTAINER" pwsh -Command "
-              \$ErrorActionPreference = 'Stop'
-              \$servicePath = '/root/.local/share/wineprefixes/bc1/drive_c/Program Files/Microsoft Dynamics NAV/260/Service'
-              if (Test-Path \"\$servicePath/Microsoft.Dynamics.Nav.Management.psd1\") {
-                Import-Module \"\$servicePath/Microsoft.Dynamics.Nav.Management.psd1\" -Force
-                Invoke-NAVCodeunit -ServerInstance BC -CodeunitId 50001 -MethodName OnRun
-                Write-Host 'Test codeunit executed successfully'
-              } else {
-                Write-Host 'ERROR: BC admin module not found'
-                exit 1
-              }
-            " 2>&1
-            cd ..
-          else
-            pwsh ./scripts/run-tests-odata.ps1 \
-              -BaseUrl "http://localhost:7048/BC" \
-              -Tenant "default" \
-              -Username "admin" \
-              -Password "Admin123!" \
-              -CodeunitId 50001 \
-              -MaxWaitSeconds 300
-          fi
-        fi
-
+        curl -s --max-time 10 -u "admin:Admin123!" "$API/logEntries" | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        p=f=0
+        for e in data['value']:
+            if e['functionName']:
+                if e['success']: p+=1; print(f'  ✓ {e[\"codeunitName\"]}::{e[\"functionName\"]}')
+                else: f+=1; print(f'  ✗ {e[\"codeunitName\"]}::{e[\"functionName\"]}')
+        print(f'\nPassed: {p}, Failed: {f}')
+        if f>0: exit(1)
+        "
         STEP_END=$(date +%s.%N)
         TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
         echo "TEST_DURATION=$TEST_DURATION" >> $GITHUB_ENV
 
     - name: Record metrics
       id: record
+      if: always()
       run: |
         END_EPOCH=$(date +%s.%N)
         TOTAL=$(python3 -c "print(f'{$END_EPOCH - $START_EPOCH:.3f}')")
-        CONTAINER_TOTAL=$(python3 -c "print(f'{${IMAGE_PULL_DURATION:-0} + ${CONTAINER_BUILD_DURATION:-0} + ${CONTAINER_DURATION:-0}:.3f}')")
         echo "total_duration=$TOTAL"                     >> $GITHUB_OUTPUT
         echo "compile_duration=${COMPILE_DURATION:-0}"   >> $GITHUB_OUTPUT
-        echo "container_duration=$CONTAINER_TOTAL"       >> $GITHUB_OUTPUT
+        echo "container_duration=${CONTAINER_DURATION:-0}" >> $GITHUB_OUTPUT
         echo "test_duration=${TEST_DURATION:-0}"         >> $GITHUB_OUTPUT
 
-        printf '{
-          "platform": "linux",
-          "runner": "ubuntu-latest",
-          "pipeline_type": "full-pipeline",
-          "total_duration": %s,
-          "setup_duration": %s,
-          "download_duration": %s,
-          "toolkit_download_duration": %s,
-          "compile_duration": %s,
-          "image_pull_duration": %s,
-          "container_build_duration": %s,
-          "container_start_duration": %s,
-          "container_total_duration": %s,
-          "toolkit_publish_duration": %s,
-          "test_duration": %s,
-          "timestamp": "%s",
-          "github_run_id": "%s",
-          "al_tools_version": "${{ env.AL_TOOLS_VERSION }}",
-          "bc_version": "${{ env.BC_VERSION }}"
-        }\n' \
-          "$TOTAL" "${SETUP_DURATION:-0}" "${DOWNLOAD_DURATION:-0}" \
-          "${TOOLKIT_DOWNLOAD_DURATION:-0}" "${COMPILE_DURATION:-0}" \
-          "${IMAGE_PULL_DURATION:-0}" "${CONTAINER_BUILD_DURATION:-0}" "${CONTAINER_DURATION:-0}" \
-          "$CONTAINER_TOTAL" "${TOOLKIT_PUBLISH_DURATION:-0}" "${TEST_DURATION:-0}" \
-          "$(date -Iseconds)" "$GITHUB_RUN_ID" \
+        echo ""
+        echo "============================================"
+        echo "  Linux Headless Pipeline - Timing Summary"
+        echo "============================================"
+        echo "  Setup + build:     ${SETUP_DURATION:-?}s"
+        echo "  Container start:   ${CONTAINER_DURATION:-?}s"
+        echo "  Symbols download:  ${DOWNLOAD_DURATION:-?}s"
+        echo "  Compile extension: ${COMPILE_DURATION:-?}s"
+        echo "  Run tests:         ${TEST_DURATION:-?}s"
+        echo "  TOTAL:             ${TOTAL}s"
+        echo "============================================"
+
+        printf '{"platform":"linux-headless","total_duration":%s,"setup_duration":%s,"container_duration":%s,"download_duration":%s,"compile_duration":%s,"test_duration":%s,"timestamp":"%s","bc_version":"%s"}\n' \
+          "$TOTAL" "${SETUP_DURATION:-0}" "${CONTAINER_DURATION:-0}" \
+          "${DOWNLOAD_DURATION:-0}" "${COMPILE_DURATION:-0}" "${TEST_DURATION:-0}" \
+          "$(date -Iseconds)" "${{ env.BC_VERSION }}" \
           > linux-full-metrics.json
 
     - name: Upload artifacts
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: linux-full-artifacts
@@ -1468,7 +963,6 @@ jobs:
           linux-full-metrics.json
         retention-days: 30
 
-# ============================================================================
 # WINDOWS FULL PIPELINE JOB  (compile + BcContainerHelper + tests)
 # ============================================================================
   windows-full:
