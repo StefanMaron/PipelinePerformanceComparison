@@ -183,8 +183,9 @@ jobs:
           for dll in System.Drawing.Common.dll System.IdentityModel.Tokens.Jwt.dll System.Private.ServiceModel.dll; do
             find "$SVC_DIR" -name "$dll" 2>/dev/null | head -1 | xargs -I{} cp {} service-dlls/ 2>/dev/null
           done
-          # Also from Test Assemblies
+          # Also from Test Assemblies (including Mock Assemblies)
           find bc-artifacts/platform -path "*Test Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
+          find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
           echo "Service DLLs: $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
         fi
 
@@ -229,12 +230,33 @@ jobs:
         echo "SYSAPP_COMPILE_DURATION=$SYSAPP_COMPILE" >> $GITHUB_ENV
         echo "System Application compilation: ${SYSAPP_COMPILE}s"
 
+    - name: Compile System Application Test Library
+      env:
+        DOTNET_ReadyToRun: '0'
+        COMPlus_ReadyToRun: '0'
+      run: |
+        STEP_START=$(date +%s.%N)
+        # Fix backslashes in Test Library
+        find "bcapps-temp/src/System Application/Test Library" -name "*.al" -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
+        echo "Compiling System Application Test Library..."
+        AL compile \
+          "/project:bcapps-temp/src/System Application/Test Library" \
+          "/packagecachepath:$(pwd)/.alpackages" \
+          "/assemblyProbingPaths:$PROBING_PATHS" \
+          || { echo "WARNING: Test Library compilation failed (version mismatch expected)"; }
+        # Copy to symbols even if partial
+        find "bcapps-temp/src/System Application/Test Library" -maxdepth 1 -name "*.app" -exec cp {} .alpackages/ \; 2>/dev/null
+        STEP_END=$(date +%s.%N)
+        echo "TESTLIB_COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
     - name: Compile System Application Test
       env:
         DOTNET_ReadyToRun: '0'
         COMPlus_ReadyToRun: '0'
       run: |
         STEP_START=$(date +%s.%N)
+        # Fix backslashes in Test files
+        find "bcapps-temp/src/System Application/Test" -name "*.al" -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
         echo "Compiling System Application Test..."
         AL compile \
           "/project:bcapps-temp/src/System Application/Test" \
