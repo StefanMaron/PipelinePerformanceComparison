@@ -209,14 +209,12 @@ jobs:
           for dll in System.Drawing.Common.dll System.IdentityModel.Tokens.Jwt.dll System.Private.ServiceModel.dll; do
             find "$SVC_DIR" -name "$dll" 2>/dev/null | head -1 | xargs -I{} cp {} service-dlls/ 2>/dev/null
           done
-          # DrawingStub provides System.Drawing types for AL compiler on Linux
-          # Copy as both assembly names since dotnet.al aliases reference both
+          # DrawingStub provides System.Drawing.Common types for AL compiler on Linux
           DRAWING_STUB="aldirectcompile/StartupHook/DrawingStub/bin/Release/net8.0/System.Drawing.Common.dll"
-          if [ -f "$DRAWING_STUB" ]; then
-            cp "$DRAWING_STUB" service-dlls/System.Drawing.Common.dll
-            cp "$DRAWING_STUB" service-dlls/System.Drawing.dll
-            echo "Added DrawingStub (as System.Drawing.Common.dll + System.Drawing.dll)"
-          fi
+          [ -f "$DRAWING_STUB" ] && cp "$DRAWING_STUB" service-dlls/System.Drawing.Common.dll && echo "Added DrawingStub"
+          # System.Drawing.dll (v4.0.0.0 compat shim) from WebClient refs
+          SYSDRAWING=$(find bc-artifacts/platform -path "*/WebClient/*/refs/System.Drawing.dll" 2>/dev/null | head -1)
+          [ -n "$SYSDRAWING" ] && cp "$SYSDRAWING" service-dlls/ && echo "Added System.Drawing.dll from WebClient refs"
           find bc-artifacts/platform -path "*Test Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
           find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
           echo "Service DLLs: $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
