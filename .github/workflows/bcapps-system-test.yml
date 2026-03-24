@@ -230,18 +230,26 @@ jobs:
         AUTH="admin:Admin123!"
         ODATA="http://localhost:7048/$INSTANCE"
 
-        # Get company ID
-        COMPANY_ID=$(curl -sf --max-time 10 -u "$AUTH" \
-          "$ODATA/ODataV4/Company" | \
-          python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])")
+        # Wait for OData to be ready and get company ID
+        echo "Waiting for BC OData endpoint..."
+        for i in $(seq 1 30); do
+          COMPANY_ID=$(curl -sf --max-time 10 -u "$AUTH" \
+            "$ODATA/ODataV4/Company" 2>/dev/null | \
+            python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])" 2>/dev/null) && break
+          echo "  Waiting... (attempt $i)"
+          sleep 5
+        done
+        [ -z "$COMPANY_ID" ] && { echo "ERROR: Could not get company ID"; exit 1; }
+        echo "Company ID: $COMPANY_ID"
         echo "COMPANY_ID=$COMPANY_ID" >> $GITHUB_ENV
         API="http://localhost:7052/$INSTANCE/api/custom/automation/v1.0/companies($COMPANY_ID)/codeunitRunRequests"
 
-        # Wait for custom API
+        # Wait for custom API (TestRunner extension)
+        echo "Waiting for TestRunner API..."
         for i in $(seq 1 24); do
           RESP=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 -u "$AUTH" "$API" 2>/dev/null)
           [ "$RESP" = "200" ] && { echo "Custom API ready"; break; }
-          echo "  Waiting for API... (HTTP $RESP)"
+          echo "  Waiting... (HTTP $RESP)"
           sleep 5
         done
 
