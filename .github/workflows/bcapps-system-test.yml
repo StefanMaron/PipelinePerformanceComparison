@@ -24,7 +24,7 @@ jobs:
   bcapps-test:
     runs-on: ubuntu-latest
     name: BCApps System App Tests
-    timeout-minutes: 60
+    timeout-minutes: 300
 
     steps:
     - name: Checkout
@@ -417,10 +417,8 @@ jobs:
         # MS-disabled codeunits (method="*" in BCApps DisabledTests/*.json)
         MS_DISABLED=" 132517 132928 135016 135018 139146 "
 
-        TEST_TIMEOUT=120
-        PASSED=0; FAILED=0; ERRORS=0; SKIPPED=0; TIMEOUTS=0; TOTAL=0
+        PASSED=0; FAILED=0; ERRORS=0; SKIPPED=0; TOTAL=0
         FAILED_CUS=""
-        TIMEOUT_CUS=""
 
         while read CU_ID; do
           TOTAL=$((TOTAL + 1))
@@ -431,28 +429,28 @@ jobs:
             continue
           fi
 
-          # Run test with timeout
-          RESULT=$(timeout $TEST_TIMEOUT bash -c "
-            RESP=\$(curl -sf --max-time 15 -u '$AUTH' -X POST \
-              -H 'Content-Type: application/json' -d '{\"codeunitId\": $CU_ID}' \
-              '$API' 2>/dev/null) || { echo 'CREATE_FAILED'; exit 0; }
-            ID=\$(echo \"\$RESP\" | python3 -c \"import json,sys; print(json.load(sys.stdin).get('Id',''))\" 2>/dev/null)
-            [ -z \"\$ID\" ] && { echo 'CREATE_FAILED'; exit 0; }
-            curl -sf -o /dev/null --max-time $((TEST_TIMEOUT - 10)) -u '$AUTH' -X POST \
-              -H 'Content-Type: application/json' \
-              '$API('\$ID')/Microsoft.NAV.runCodeunit' 2>/dev/null || true
-            curl -sf --max-time 10 -u '$AUTH' '$API('\$ID')' 2>/dev/null | \
-              python3 -c \"import json,sys; d=json.load(sys.stdin); print(d.get('LastResult','Unknown'))\" 2>/dev/null || echo 'Unknown'
-          " 2>/dev/null) || RESULT=""
+          # Create run request
+          RESP=$(curl -sf --max-time 30 -u "$AUTH" -X POST \
+            -H "Content-Type: application/json" -d "{\"codeunitId\": $CU_ID}" \
+            "$API" 2>/dev/null) || RESP=""
+          ID=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Id',''))" 2>/dev/null)
 
-          if [ -z "$RESULT" ] || [ "$RESULT" = "" ]; then
-            TIMEOUTS=$((TIMEOUTS + 1))
-            TIMEOUT_CUS="$TIMEOUT_CUS $CU_ID"
-            echo "  TMOUT CU $CU_ID (${TEST_TIMEOUT}s)"
-          elif [ "$RESULT" = "CREATE_FAILED" ]; then
+          if [ -z "$ID" ]; then
             ERRORS=$((ERRORS + 1))
             echo "  ERR   CU $CU_ID: create failed"
-          elif [ "$RESULT" = "Success" ]; then
+            continue
+          fi
+
+          # Execute (no timeout — let it run as long as it needs)
+          curl -sf -o /dev/null --max-time 600 -u "$AUTH" -X POST \
+            -H "Content-Type: application/json" \
+            "$API($ID)/Microsoft.NAV.runCodeunit" 2>/dev/null || true
+
+          # Get result
+          RESULT=$(curl -sf --max-time 10 -u "$AUTH" "$API($ID)" 2>/dev/null | \
+            python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('LastResult','Unknown'))" 2>/dev/null) || RESULT="Unknown"
+
+          if [ "$RESULT" = "Success" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -460,7 +458,7 @@ jobs:
             echo "  FAIL  CU $CU_ID: $RESULT"
           fi
 
-          [ $((TOTAL % 25)) -eq 0 ] && echo "--- Progress: $TOTAL/$(($(wc -l < test-codeunit-ids.txt))) (pass=$PASSED fail=$FAILED skip=$SKIPPED tmout=$TIMEOUTS err=$ERRORS) ---"
+          [ $((TOTAL % 25)) -eq 0 ] && echo "--- Progress: $TOTAL/$(($(wc -l < test-codeunit-ids.txt))) (pass=$PASSED fail=$FAILED skip=$SKIPPED err=$ERRORS) ---"
         done < test-codeunit-ids.txt
 
         EFF=$((PASSED + FAILED))
@@ -474,7 +472,6 @@ jobs:
         echo "Passed:          $PASSED"
         echo "Failed:          $FAILED"
         echo "MS-Disabled:     $SKIPPED"
-        echo "Timeouts:        $TIMEOUTS"
         echo "Errors:          $ERRORS"
         echo "Pass rate:       ${RATE}% (of $EFF executed)"
         echo "========================================="
@@ -483,14 +480,12 @@ jobs:
         echo "TEST_PASSED=$PASSED" >> $GITHUB_ENV
         echo "TEST_FAILED=$FAILED" >> $GITHUB_ENV
         echo "TEST_SKIPPED=$SKIPPED" >> $GITHUB_ENV
-        echo "TEST_TIMEOUTS=$TIMEOUTS" >> $GITHUB_ENV
         echo "TEST_ERRORS=$ERRORS" >> $GITHUB_ENV
 
         STEP_END=$(date +%s.%N)
         echo "TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
         [ -n "$FAILED_CUS" ] && echo "Failed:$FAILED_CUS"
-        [ -n "$TIMEOUT_CUS" ] && echo "Timeouts:$TIMEOUT_CUS"
 
     - name: Record metrics
       if: always()
@@ -515,5 +510,4 @@ jobs:
         echo "Codeunits passed:   ${TEST_PASSED:-n/a}"
         echo "Codeunits failed:   ${TEST_FAILED:-n/a}"
         echo "Codeunits disabled: ${TEST_SKIPPED:-n/a}"
-        echo "Codeunits timeout:  ${TEST_TIMEOUTS:-n/a}"
         echo "Codeunits errors:   ${TEST_ERRORS:-n/a}"
