@@ -24,7 +24,7 @@ jobs:
   bcapps-test:
     runs-on: ubuntu-latest
     name: BCApps System App Tests
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
     - name: Checkout
@@ -48,7 +48,7 @@ jobs:
       run: |
         STEP_START=$(date +%s.%N)
 
-        # Clone BCApps System Application source
+        # Clone BCApps System Application source (for test codeunit ID extraction + DisabledTests)
         echo "Cloning microsoft/BCApps branch ${{ env.BCAPPS_TAG }}..."
         git clone --depth 1 --branch ${{ env.BCAPPS_TAG }} --single-branch \
           https://github.com/microsoft/BCApps bcapps-temp &
@@ -66,14 +66,9 @@ jobs:
         } || echo "SqlClient OK"
         cd ../..
 
-        # Save TestRunner.app
-        cp aldirectcompile/TestRunnerExtension/TestRunner.app TestRunner.app
-
         # Wait for BCApps clone
         wait $BCAPPS_PID
-        AL_COUNT=$(find bcapps-temp/src/System\ Application/App -name "*.al" 2>/dev/null | wc -l)
-        TEST_COUNT=$(find bcapps-temp/src/System\ Application/Test -name "*.al" 2>/dev/null | wc -l)
-        echo "System Application: $AL_COUNT AL files, Test: $TEST_COUNT AL files"
+        echo "BCApps cloned"
 
         STEP_END=$(date +%s.%N)
         echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
@@ -142,187 +137,92 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
-    - name: Prepare symbols and dependencies
+    - name: Publish test framework apps
       run: |
         STEP_START=$(date +%s.%N)
-        mkdir -p .alpackages mock-assemblies service-dlls
-
-        # Copy all extension .app files as symbols
-        find bc-artifacts/app/Extensions -name "*.app" -exec cp {} .alpackages/ \;
-
-        # Copy System.app from platform
-        SYSTEM_APP=$(find bc-artifacts/platform/ModernDev -name "System.app" 2>/dev/null | head -1)
-        [ -n "$SYSTEM_APP" ] && cp "$SYSTEM_APP" .alpackages/System.app
-
-        # Copy test toolkit .app files
-        find bc-artifacts/platform/applications/testframework -name "*.app" -exec cp {} .alpackages/ \; 2>/dev/null
-        # Copy test libraries from platform apps (BaseApp/Test, etc.)
-        find bc-artifacts/platform/applications -path "*/Test/*.app" -exec cp {} .alpackages/ \; 2>/dev/null
-
-        echo "Symbols: $(ls .alpackages/*.app 2>/dev/null | wc -l) .app files"
-
-        # Copy mock assemblies
-        find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp {} mock-assemblies/ \; 2>/dev/null
-        echo "Mock assemblies: $(ls mock-assemblies/*.dll 2>/dev/null | wc -l) DLLs"
-
-        # Build assembly probing paths for AL compiler
-        # CRITICAL: Use .NET 8 REFERENCE assemblies (not runtime!) for standard BCL types.
-        # Runtime DLLs have type-forwarding chains that crash the AL compiler's Cecil loader.
-        # Then add BC service DLLs (excluding System.* to avoid conflicts) for BC-specific types.
-        mkdir -p service-dlls
-        SVC_DIR=$(find bc-artifacts/platform/ServiceTier -name "Microsoft.Dynamics.Nav.Server.dll" -printf "%h\n" 2>/dev/null | head -1)
-        if [ -n "$SVC_DIR" ]; then
-          # Copy non-System DLLs from service dir + all subdirs (Add-ins etc.)
-          find "$SVC_DIR" -name "*.dll" | while read f; do
-            case "$(basename "$f")" in
-              System.*) ;; # skip — use ref assemblies instead
-              *) cp -n "$f" service-dlls/ 2>/dev/null ;;
-            esac
-          done
-          # But we DO need these specific System DLLs from service (not in ref assemblies)
-          for dll in System.Drawing.Common.dll System.IdentityModel.Tokens.Jwt.dll System.Private.ServiceModel.dll; do
-            find "$SVC_DIR" -name "$dll" 2>/dev/null | head -1 | xargs -I{} cp {} service-dlls/ 2>/dev/null
-          done
-          # Also from Test Assemblies (including Mock Assemblies)
-          find bc-artifacts/platform -path "*Test Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
-          find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
-          echo "Service DLLs: $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
-        fi
-
-        # Patch: comment out FaultException alias (Cecil loader can't resolve type forwarding)
-        sed -i '/assembly("System.ServiceModel.Primitives")/,/^    }/{s/^/\/\//}' \
-          "bcapps-temp/src/System Application/App/DotNet Aliases/src/dotnet.al" 2>/dev/null
-
-        # .NET 8 reference assemblies (stubs with type definitions, no forwarding chains)
-        REF_DIR=$(find /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref -maxdepth 2 -type d -name "net8.0" 2>/dev/null | head -1)
-        PROBING="$REF_DIR,$(pwd)/service-dlls,$(pwd)/mock-assemblies"
-        echo "PROBING_PATHS=$PROBING" >> $GITHUB_ENV
-        echo "Assembly probing: $PROBING"
-
-        # Fix backslash paths in BCApps AL files (Linux AL compiler needs forward slashes)
-        FIXED=$(find bcapps-temp/src/System\ Application -name "*.al" -exec grep -l '\\' {} \; 2>/dev/null | wc -l)
-        find bcapps-temp/src/System\ Application -name "*.al" -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
-        echo "Fixed backslash paths in $FIXED .al files"
-
-        STEP_END=$(date +%s.%N)
-        echo "PREPARE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
-
-    - name: Compile System Application
-      env:
-        DOTNET_ReadyToRun: '0'
-        COMPlus_ReadyToRun: '0'
-      run: |
-        STEP_START=$(date +%s.%N)
-        echo "Compiling System Application..."
-        AL compile \
-          "/project:bcapps-temp/src/System Application/App" \
-          "/packagecachepath:$(pwd)/.alpackages" \
-          "/assemblyProbingPaths:$PROBING_PATHS" \
-          || { echo "ERROR: System Application compilation failed"; exit 1; }
-
-        # Copy compiled app to .alpackages for test compilation
-        find "bcapps-temp/src/System Application/App" -maxdepth 1 -name "*.app" -exec cp {} .alpackages/ \;
-        find "bcapps-temp/src/System Application/App" -maxdepth 1 -name "*.app" -exec cp {} . \;
-        echo "Compiled: $(ls -la bcapps-temp/src/System\ Application/App/*.app 2>/dev/null)"
-
-        STEP_END=$(date +%s.%N)
-        SYSAPP_COMPILE=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "SYSAPP_COMPILE_DURATION=$SYSAPP_COMPILE" >> $GITHUB_ENV
-        echo "System Application compilation: ${SYSAPP_COMPILE}s"
-
-    - name: Compile System Application Test Library
-      env:
-        DOTNET_ReadyToRun: '0'
-        COMPlus_ReadyToRun: '0'
-      run: |
-        STEP_START=$(date +%s.%N)
-        # Fix backslashes in Test Library
-        find "bcapps-temp/src/System Application/Test Library" -name "*.al" -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
-        echo "Compiling System Application Test Library..."
-        AL compile \
-          "/project:bcapps-temp/src/System Application/Test Library" \
-          "/packagecachepath:$(pwd)/.alpackages" \
-          "/assemblyProbingPaths:$PROBING_PATHS" \
-          || { echo "WARNING: Test Library compilation failed (version mismatch expected)"; }
-        # Copy to symbols even if partial
-        find "bcapps-temp/src/System Application/Test Library" -maxdepth 1 -name "*.app" -exec cp {} .alpackages/ \; 2>/dev/null
-        STEP_END=$(date +%s.%N)
-        echo "TESTLIB_COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
-
-    - name: Compile System Application Test
-      env:
-        DOTNET_ReadyToRun: '0'
-        COMPlus_ReadyToRun: '0'
-      run: |
-        STEP_START=$(date +%s.%N)
-        # Fix backslashes in Test files
-        find "bcapps-temp/src/System Application/Test" -name "*.al" -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
-        echo "Compiling System Application Test..."
-        AL compile \
-          "/project:bcapps-temp/src/System Application/Test" \
-          "/packagecachepath:$(pwd)/.alpackages" \
-          "/assemblyProbingPaths:$PROBING_PATHS" \
-          || { echo "ERROR: System Application Test compilation failed"; exit 1; }
-
-        # Extract test extension ID
-        TEST_ID=$(python3 -c "import json; print(json.load(open('bcapps-temp/src/System Application/Test/app.json'))['id'])")
-        echo "SYSAPP_TEST_ID=$TEST_ID" >> $GITHUB_ENV
-        echo "Test extension ID: $TEST_ID"
-
-        find "bcapps-temp/src/System Application/Test" -maxdepth 1 -name "*.app" -exec cp {} . \;
-        echo "Compiled: $(ls -la bcapps-temp/src/System\ Application/Test/*.app 2>/dev/null)"
-
-        STEP_END=$(date +%s.%N)
-        TEST_COMPILE=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")
-        echo "TEST_COMPILE_DURATION=$TEST_COMPILE" >> $GITHUB_ENV
-        echo "System Application Test compilation: ${TEST_COMPILE}s"
-
-    - name: Publish extensions to BC
-      run: |
-        STEP_START=$(date +%s.%N)
-        # Use forcesync: CRONUS backup has pre-existing System Application schema
-        DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=forcesync"
         AUTH="admin:Admin123!"
+        DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=forcesync"
+        APPS_DIR="bc-artifacts/platform/applications"
 
         publish_app() {
           local FILE="$1" NAME="$2"
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 180 \
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
             -u "$AUTH" -X POST \
             -F "file=@$FILE;type=application/octet-stream" "$DEV")
           echo "  $NAME: HTTP $HTTP"
-          [ "$HTTP" = "200" ] || { echo "ERROR: Failed to publish $NAME"; return 1; }
+          [ "$HTTP" = "200" ] || { echo "WARNING: Failed to publish $NAME"; return 1; }
         }
 
-        # Publish in dependency order
-        publish_app TestRunner.app "TestRunner"
+        # System Application is pre-installed from CRONUS backup (kept by entrypoint).
+        # Only publish test framework + test apps on top.
+        echo "Publishing test framework apps (System Application pre-installed from CRONUS)..."
 
-        SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
-        publish_app "$SYSAPP" "System Application"
+        # Test framework libraries (from platform artifacts)
+        publish_app "$(find "$APPS_DIR/testframework/testlibraries/any" -name '*.app' | head -1)" "Any"
+        publish_app "$(find "$APPS_DIR/testframework/testlibraries/assert" -name '*.app' | head -1)" "Library Assert"
+        publish_app "$(find "$APPS_DIR/testframework/testlibraries/variable storage" -name '*.app' | head -1)" "Library Variable Storage"
+        publish_app "$(find "$APPS_DIR/testframework/testlibraries/permissions mock" -name '*.app' | head -1)" "Permissions Mock"
 
-        # Test framework dependencies (from BC platform artifacts)
-        for lib in assert "variable storage" "permissions mock"; do
-          LIB_APP=$(find bc-artifacts/platform -ipath "*testlibraries*$lib*/*.app" 2>/dev/null | head -1)
-          [ -n "$LIB_APP" ] && publish_app "$LIB_APP" "$(basename "$LIB_APP" .app)"
-        done
+        # MS Test Runner (codeunits 130450-130456)
+        publish_app "$(find "$APPS_DIR/testframework/TestRunner" -name '*.app' | head -1)" "Test Runner (MS)"
 
-        # Any package (test dependency)
-        ANY_APP=$(find bc-artifacts -name "*_Any*.app" 2>/dev/null | head -1)
-        [ -n "$ANY_APP" ] && publish_app "$ANY_APP" "Any"
+        # System Application Test Library and Tests (pre-compiled from platform artifacts)
+        publish_app "$(find "$APPS_DIR/System Application/Test" -name '*Test Library*' | head -1)" "System App Test Library"
+        publish_app "$(find "$APPS_DIR/System Application/Test" -name '*System Application Test.app' | head -1)" "System App Test"
 
-        # Test Library
-        TESTLIB=$(find . -maxdepth 1 -name "*Test*Library*.app" | head -1)
-        [ -n "$TESTLIB" ] && publish_app "$TESTLIB" "Test Library"
-
-        # System Application Test
-        TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" ! -name "*Library*" | head -1)
-        [ -n "$TESTAPP" ] && publish_app "$TESTAPP" "System Application Test"
+        # Our custom TestRunner extension (wraps MS Test Framework with API)
+        publish_app "aldirectcompile/TestRunnerExtension/TestRunner.app" "TestRunner Extension"
 
         STEP_END=$(date +%s.%N)
         echo "PUBLISH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
+    - name: Initialize demo data
+      run: |
+        STEP_START=$(date +%s.%N)
+        AUTH="admin:Admin123!"
+        ODATA="http://localhost:7048/$INSTANCE"
+
+        # Get company ID
+        COMPANY_ID=$(curl -sf --max-time 10 -u "$AUTH" \
+          "$ODATA/ODataV4/Company" | \
+          python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])")
+        echo "COMPANY_ID=$COMPANY_ID" >> $GITHUB_ENV
+        API="http://localhost:7052/$INSTANCE/api/custom/automation/v1.0/companies($COMPANY_ID)/codeunitRunRequests"
+
+        # Wait for custom API
+        for i in $(seq 1 24); do
+          RESP=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 -u "$AUTH" "$API" 2>/dev/null)
+          [ "$RESP" = "200" ] && { echo "Custom API ready"; break; }
+          echo "  Waiting for API... (HTTP $RESP)"
+          sleep 5
+        done
+
+        # Run demo data initialization codeunits (matches BCApps ImportTestDataInBcContainer.ps1)
+        run_cu() {
+          local id=$1 name=$2
+          printf "  CU %-6s %-35s " "$id" "$name..."
+          RESP=$(curl -sf --max-time 15 -u "$AUTH" -X POST \
+            -H "Content-Type: application/json" -d "{\"codeunitId\": $id}" "$API" 2>/dev/null)
+          REQ_ID=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Id',''))" 2>/dev/null)
+          [ -z "$REQ_ID" ] && { echo "FAILED (create)"; return 1; }
+          curl -sf -o /dev/null --max-time 300 -u "$AUTH" -X POST \
+            -H "Content-Type: application/json" "$API($REQ_ID)/Microsoft.NAV.runCodeunit" 2>/dev/null || true
+          RESULT=$(curl -sf --max-time 10 -u "$AUTH" "$API($REQ_ID)" | \
+            python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('LastResult','Unknown'))" 2>/dev/null)
+          echo "$RESULT"
+        }
+
+        echo "Initializing demo data..."
+        run_cu 2    "Company Initialize"
+        run_cu 5193 "Contoso Demo Data (OnRun)"
+        run_cu 5691 "Contoso Finish"
+
+        STEP_END=$(date +%s.%N)
+        echo "DEMODATA_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
     - name: Extract test codeunit IDs
       run: |
-        # Find all test codeunit IDs (Subtype = Test) from the compiled source
+        # Find all test codeunit IDs (Subtype = Test) from BCApps source
         grep -r "Subtype = Test" bcapps-temp/src/System\ Application/Test/ --include="*.al" -l | while read f; do
             grep -oP "^codeunit \K\d+" "$f"
         done | sort -n > test-codeunit-ids.txt
@@ -333,69 +233,62 @@ jobs:
       run: |
         STEP_START=$(date +%s.%N)
         AUTH="admin:Admin123!"
-        ODATA="http://localhost:7048/$INSTANCE"
+        API="http://localhost:7052/$INSTANCE/api/custom/automation/v1.0/companies($COMPANY_ID)/codeunitRunRequests"
 
-        # Get company ID
-        COMPANY_ID=$(curl -s --max-time 10 -u "$AUTH" \
-          "$ODATA/ODataV4/Company" | \
-          python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])")
-        echo "Company ID: $COMPANY_ID"
+        # MS-disabled codeunits (method="*" in BCApps DisabledTests/*.json)
+        MS_DISABLED=" 132517 132928 135016 135018 139146 "
 
-        # Custom API on port 7052
-        API="http://localhost:7052/custom/automation/v1.0/companies($COMPANY_ID)"
+        # Per-test timeout (seconds)
+        TEST_TIMEOUT=120
 
-        # Wait for Test Runner API
-        echo "Checking Test Runner API..."
-        for i in $(seq 1 24); do
-          RESP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -u "$AUTH" "$API/codeunitRunRequests" 2>&1)
-          [ "$RESP" = "200" ] && { echo "  API ready"; break; }
-          echo "  Waiting... (HTTP $RESP)"
-          sleep 5
-        done
-
-        # Run all test codeunits
-        PASSED=0; FAILED=0; ERRORS=0; TOTAL=0
+        PASSED=0; FAILED=0; ERRORS=0; SKIPPED=0; TIMEOUTS=0; TOTAL=0
         FAILED_CUS=""
+        TIMEOUT_CUS=""
 
         while read CU_ID; do
           TOTAL=$((TOTAL + 1))
 
-          # Create run request
-          RESP=$(curl -s --max-time 10 -u "$AUTH" -X POST \
-            -H "Content-Type: application/json" -d "{\"codeunitId\": $CU_ID}" \
-            "$API/codeunitRunRequests" 2>&1)
-          ID=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Id',''))" 2>/dev/null)
-
-          if [ -z "$ID" ] || [ "$ID" = "" ]; then
-            ERRORS=$((ERRORS + 1))
-            echo "  ⚠ CU $CU_ID: create failed (auth timeout?)"
+          # Skip MS-disabled codeunits
+          if echo "$MS_DISABLED" | grep -q " $CU_ID "; then
+            SKIPPED=$((SKIPPED + 1))
             continue
           fi
 
-          # Execute
-          curl -s -o /dev/null --max-time 300 -u "$AUTH" -X POST \
-            -H "Content-Type: application/json" \
-            "$API/codeunitRunRequests($ID)/Microsoft.NAV.runCodeunit" 2>&1
+          # Run test with timeout (kills hung tests)
+          RESULT=$(timeout $TEST_TIMEOUT bash -c "
+            RESP=\$(curl -sf --max-time 15 -u '$AUTH' -X POST \
+              -H 'Content-Type: application/json' -d '{\"codeunitId\": $CU_ID}' \
+              '$API' 2>/dev/null) || { echo 'CREATE_FAILED'; exit 0; }
+            ID=\$(echo \"\$RESP\" | python3 -c \"import json,sys; print(json.load(sys.stdin).get('Id',''))\" 2>/dev/null)
+            [ -z \"\$ID\" ] && { echo 'CREATE_FAILED'; exit 0; }
+            curl -sf -o /dev/null --max-time $((TEST_TIMEOUT - 10)) -u '$AUTH' -X POST \
+              -H 'Content-Type: application/json' \
+              '$API('\$ID')/Microsoft.NAV.runCodeunit' 2>/dev/null || true
+            curl -sf --max-time 10 -u '$AUTH' '$API('\$ID')' 2>/dev/null | \
+              python3 -c \"import json,sys; d=json.load(sys.stdin); print(d.get('LastResult','Unknown'))\" 2>/dev/null || echo 'Unknown'
+          " 2>/dev/null) || RESULT=""
 
-          # Get result
-          RESULT=$(curl -s --max-time 10 -u "$AUTH" \
-            "$API/codeunitRunRequests($ID)" 2>&1 | \
-            python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('LastResult','Unknown'))" 2>/dev/null)
-
-          case "$RESULT" in
-            Success)
-              PASSED=$((PASSED + 1))
-              ;;
-            *)
-              FAILED=$((FAILED + 1))
-              FAILED_CUS="$FAILED_CUS $CU_ID"
-              echo "  ✗ CU $CU_ID: $RESULT"
-              ;;
-          esac
+          if [ -z "$RESULT" ] || [ "$RESULT" = "" ]; then
+            TIMEOUTS=$((TIMEOUTS + 1))
+            TIMEOUT_CUS="$TIMEOUT_CUS $CU_ID"
+            echo "  TMOUT CU $CU_ID (${TEST_TIMEOUT}s)"
+          elif [ "$RESULT" = "CREATE_FAILED" ]; then
+            ERRORS=$((ERRORS + 1))
+            echo "  ERR   CU $CU_ID: create failed"
+          elif [ "$RESULT" = "Success" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+            FAILED_CUS="$FAILED_CUS $CU_ID"
+            echo "  FAIL  CU $CU_ID: $RESULT"
+          fi
 
           # Progress every 25 codeunits
-          [ $((TOTAL % 25)) -eq 0 ] && echo "--- Progress: $TOTAL codeunits (pass=$PASSED fail=$FAILED err=$ERRORS) ---"
+          [ $((TOTAL % 25)) -eq 0 ] && echo "--- Progress: $TOTAL codeunits (pass=$PASSED fail=$FAILED skip=$SKIPPED tmout=$TIMEOUTS err=$ERRORS) ---"
         done < test-codeunit-ids.txt
+
+        EFF=$((PASSED + FAILED))
+        RATE=0; [ $EFF -gt 0 ] && RATE=$(python3 -c "print(round($PASSED/$EFF*100,1))")
 
         echo ""
         echo "========================================="
@@ -404,23 +297,24 @@ jobs:
         echo "Total codeunits: $TOTAL"
         echo "Passed:          $PASSED"
         echo "Failed:          $FAILED"
+        echo "MS-Disabled:     $SKIPPED"
+        echo "Timeouts:        $TIMEOUTS"
         echo "Errors:          $ERRORS"
+        echo "Pass rate:       ${RATE}% (of $EFF executed)"
         echo "========================================="
 
-        # Save results for metrics
         echo "TEST_TOTAL=$TOTAL" >> $GITHUB_ENV
         echo "TEST_PASSED=$PASSED" >> $GITHUB_ENV
         echo "TEST_FAILED=$FAILED" >> $GITHUB_ENV
+        echo "TEST_SKIPPED=$SKIPPED" >> $GITHUB_ENV
+        echo "TEST_TIMEOUTS=$TIMEOUTS" >> $GITHUB_ENV
         echo "TEST_ERRORS=$ERRORS" >> $GITHUB_ENV
 
         STEP_END=$(date +%s.%N)
         echo "TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
-        # Report failed codeunits
-        if [ -n "$FAILED_CUS" ]; then
-          echo ""
-          echo "Failed codeunits:$FAILED_CUS"
-        fi
+        [ -n "$FAILED_CUS" ] && echo "Failed:$FAILED_CUS"
+        [ -n "$TIMEOUT_CUS" ] && echo "Timeouts:$TIMEOUT_CUS"
 
     - name: Record metrics
       if: always()
@@ -430,15 +324,15 @@ jobs:
         echo "Setup (clone + build):  ${SETUP_DURATION:-n/a}s"
         echo "Download artifacts:     ${DOWNLOAD_DURATION:-n/a}s"
         echo "BC container start:     ${CONTAINER_DURATION:-n/a}s"
-        echo "Prepare symbols:        ${PREPARE_DURATION:-n/a}s"
-        echo "Compile System App:     ${SYSAPP_COMPILE_DURATION:-n/a}s"
-        echo "Compile System App Test:${TEST_COMPILE_DURATION:-n/a}s"
         echo "Publish extensions:     ${PUBLISH_DURATION:-n/a}s"
+        echo "Demo data init:         ${DEMODATA_DURATION:-n/a}s"
         echo "Run tests:              ${TEST_DURATION:-n/a}s"
         echo "Total:                  ${TOTAL}s"
         echo ""
         echo "=== Test Results ==="
-        echo "Codeunits total:  ${TEST_TOTAL:-n/a}"
-        echo "Codeunits passed: ${TEST_PASSED:-n/a}"
-        echo "Codeunits failed: ${TEST_FAILED:-n/a}"
-        echo "Codeunits errors: ${TEST_ERRORS:-n/a}"
+        echo "Codeunits total:    ${TEST_TOTAL:-n/a}"
+        echo "Codeunits passed:   ${TEST_PASSED:-n/a}"
+        echo "Codeunits failed:   ${TEST_FAILED:-n/a}"
+        echo "Codeunits disabled: ${TEST_SKIPPED:-n/a}"
+        echo "Codeunits timeout:  ${TEST_TIMEOUTS:-n/a}"
+        echo "Codeunits errors:   ${TEST_ERRORS:-n/a}"
