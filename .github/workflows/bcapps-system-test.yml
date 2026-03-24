@@ -315,9 +315,6 @@ jobs:
           [ "$HTTP" = "200" ] || { echo "ERROR: Failed to publish $NAME"; return 1; }
         }
 
-        # TestRunner Extension (custom API for test execution)
-        publish_app TestRunner.app "TestRunner Extension"
-
         # System Application (compiled from BCApps source)
         SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
         publish_app "$SYSAPP" "System Application"
@@ -333,6 +330,9 @@ jobs:
         # MS Test Runner (codeunits 130450-130456, from platform artifacts)
         TR_APP=$(find bc-artifacts/platform -ipath "*testframework/TestRunner*/*.app" 2>/dev/null | head -1)
         [ -n "$TR_APP" ] && publish_app "$TR_APP" "Test Runner (MS)"
+
+        # TestRunner Extension (custom API — depends on MS Test Runner)
+        publish_app TestRunner.app "TestRunner Extension"
 
         # System Application Test Library + Test (compiled from BCApps source)
         TESTLIB=$(find . -maxdepth 1 -name "*Test*Library*.app" | head -1)
