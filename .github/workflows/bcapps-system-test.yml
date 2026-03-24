@@ -280,34 +280,54 @@ jobs:
     - name: Publish extensions to BC
       run: |
         STEP_START=$(date +%s.%N)
-        DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=synchronize"
+        # Use forcesync: CRONUS backup has pre-existing System Application schema
+        DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=forcesync"
         AUTH="admin:Admin123!"
 
-        # Publish TestRunner (provides test API)
-        echo "Publishing TestRunner..."
-        curl -s -o /dev/null -w "  HTTP %{http_code}\n" --max-time 60 \
-          -u "$AUTH" -X POST \
-          -F "file=@TestRunner.app;type=application/octet-stream" "$DEV"
+        publish_app() {
+          local FILE="$1" NAME="$2"
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 180 \
+            -u "$AUTH" -X POST \
+            -F "file=@$FILE;type=application/octet-stream" "$DEV")
+          echo "  $NAME: HTTP $HTTP"
+          [ "$HTTP" = "200" ] || { echo "ERROR: Failed to publish $NAME"; return 1; }
+        }
 
-        # Publish compiled System Application
+        # Publish in dependency order
+        publish_app TestRunner.app "TestRunner"
+
         SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
-        echo "Publishing System Application: $SYSAPP"
-        curl -s -o /dev/null -w "  HTTP %{http_code}\n" --max-time 120 \
-          -u "$AUTH" -X POST \
-          -F "file=@$SYSAPP;type=application/octet-stream" "$DEV"
+        publish_app "$SYSAPP" "System Application"
 
-        # Publish compiled System Application Test
-        TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" | head -1)
-        echo "Publishing System Application Test: $TESTAPP"
-        curl -s -o /dev/null -w "  HTTP %{http_code}\n" --max-time 120 \
-          -u "$AUTH" -X POST \
-          -F "file=@$TESTAPP;type=application/octet-stream" "$DEV"
+        # Test framework dependencies (from BC platform artifacts)
+        for lib in assert "variable storage" "permissions mock"; do
+          LIB_APP=$(find bc-artifacts/platform -ipath "*testlibraries*$lib*/*.app" 2>/dev/null | head -1)
+          [ -n "$LIB_APP" ] && publish_app "$LIB_APP" "$(basename "$LIB_APP" .app)"
+        done
 
-        echo "Waiting for extensions to compile in BC..."
-        sleep 30
+        # Any package (test dependency)
+        ANY_APP=$(find bc-artifacts -name "*_Any*.app" 2>/dev/null | head -1)
+        [ -n "$ANY_APP" ] && publish_app "$ANY_APP" "Any"
+
+        # Test Library
+        TESTLIB=$(find . -maxdepth 1 -name "*Test*Library*.app" | head -1)
+        [ -n "$TESTLIB" ] && publish_app "$TESTLIB" "Test Library"
+
+        # System Application Test
+        TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" ! -name "*Library*" | head -1)
+        [ -n "$TESTAPP" ] && publish_app "$TESTAPP" "System Application Test"
 
         STEP_END=$(date +%s.%N)
         echo "PUBLISH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Extract test codeunit IDs
+      run: |
+        # Find all test codeunit IDs (Subtype = Test) from the compiled source
+        grep -r "Subtype = Test" bcapps-temp/src/System\ Application/Test/ --include="*.al" -l | while read f; do
+            grep -oP "^codeunit \K\d+" "$f"
+        done | sort -n > test-codeunit-ids.txt
+        echo "Found $(wc -l < test-codeunit-ids.txt) test codeunits"
+        cat test-codeunit-ids.txt
 
     - name: Run System Application Tests
       run: |
@@ -333,66 +353,74 @@ jobs:
           sleep 5
         done
 
-        # Find test codeunit IDs from the System Application Test
-        # The test runner (Subtype=TestRunner) runs all [Test] functions in a codeunit
-        # We need to find which codeunit IDs are test codeunits in the System App Test
-        # For now, use the test runner to run the entire extension by codeunit ID
-        # The TestRunner codeunit (50003) executes codeunit by ID via RunCodeunit
+        # Run all test codeunits
+        PASSED=0; FAILED=0; ERRORS=0; TOTAL=0
+        FAILED_CUS=""
 
-        # Get all test codeunit IDs from the compiled test app.json
-        echo "Looking for test codeunits..."
+        while read CU_ID; do
+          TOTAL=$((TOTAL + 1))
 
-        # Try running codeunit 130000+ range (standard System App test IDs)
-        # Actually, use the Test Runner's batch capability
-        # First, list what we can find
-        echo "Running test via TestRunner API..."
+          # Create run request
+          RESP=$(curl -s --max-time 10 -u "$AUTH" -X POST \
+            -H "Content-Type: application/json" -d "{\"codeunitId\": $CU_ID}" \
+            "$API/codeunitRunRequests" 2>&1)
+          ID=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Id',''))" 2>/dev/null)
 
-        # Create run request — we need to find the actual test codeunit IDs
-        # System Application Test codeunits are typically in the 130000-139999 range
-        # Let's try a few known ones and see what happens
-        CREATE_RESP=$(curl -s --max-time 10 -u "$AUTH" -X POST \
-          -H "Content-Type: application/json" -d '{"CodeunitId": 132439}' \
-          "$API/codeunitRunRequests")
-        RID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Id',''))" 2>/dev/null)
+          if [ -z "$ID" ] || [ "$ID" = "" ]; then
+            ERRORS=$((ERRORS + 1))
+            echo "  ⚠ CU $CU_ID: create failed (auth timeout?)"
+            continue
+          fi
 
-        if [ -n "$RID" ] && [ "$RID" != "" ]; then
-          echo "Run request ID: $RID"
-          echo "Executing tests..."
-          curl -s --max-time 300 -u "$AUTH" -X POST \
+          # Execute
+          curl -s -o /dev/null --max-time 300 -u "$AUTH" -X POST \
             -H "Content-Type: application/json" \
-            "$API/codeunitRunRequests($RID)/Microsoft.NAV.runCodeunit" > /dev/null
+            "$API/codeunitRunRequests($ID)/Microsoft.NAV.runCodeunit" 2>&1
 
-          STATUS=$(curl -s --max-time 10 -u "$AUTH" \
-            "$API/codeunitRunRequests($RID)" | \
-            python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('Status','Unknown'))")
-          echo "Status: $STATUS"
-        else
-          echo "Could not create run request. Testing API directly..."
-          echo "Response: $CREATE_RESP" | head -c 300
-        fi
+          # Get result
+          RESULT=$(curl -s --max-time 10 -u "$AUTH" \
+            "$API/codeunitRunRequests($ID)" 2>&1 | \
+            python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('LastResult','Unknown'))" 2>/dev/null)
 
-        # Read log entries
-        curl -s --max-time 10 -u "$AUTH" "$API/logEntries" | python3 -c "
-        import sys, json
-        data = json.load(sys.stdin)
-        p=f=0
-        for e in data['value']:
-            fn = e.get('functionName', '')
-            if fn:
-                cu = e.get('codeunitName', '')
-                ok = e.get('success', False)
-                if ok: p+=1; print(f'  ✓ {cu}::{fn}')
-                else:
-                    f+=1
-                    err = e.get('errorMessage', '')[:100]
-                    print(f'  ✗ {cu}::{fn}: {err}')
-        print(f'\nPassed: {p}, Failed: {f}')
-        if p == 0 and f == 0:
-            print('WARNING: No test results found — test codeunit may not exist or test runner not working')
-        "
+          case "$RESULT" in
+            Success)
+              PASSED=$((PASSED + 1))
+              ;;
+            *)
+              FAILED=$((FAILED + 1))
+              FAILED_CUS="$FAILED_CUS $CU_ID"
+              echo "  ✗ CU $CU_ID: $RESULT"
+              ;;
+          esac
+
+          # Progress every 25 codeunits
+          [ $((TOTAL % 25)) -eq 0 ] && echo "--- Progress: $TOTAL codeunits (pass=$PASSED fail=$FAILED err=$ERRORS) ---"
+        done < test-codeunit-ids.txt
+
+        echo ""
+        echo "========================================="
+        echo "SYSTEM APPLICATION TEST RESULTS"
+        echo "========================================="
+        echo "Total codeunits: $TOTAL"
+        echo "Passed:          $PASSED"
+        echo "Failed:          $FAILED"
+        echo "Errors:          $ERRORS"
+        echo "========================================="
+
+        # Save results for metrics
+        echo "TEST_TOTAL=$TOTAL" >> $GITHUB_ENV
+        echo "TEST_PASSED=$PASSED" >> $GITHUB_ENV
+        echo "TEST_FAILED=$FAILED" >> $GITHUB_ENV
+        echo "TEST_ERRORS=$ERRORS" >> $GITHUB_ENV
 
         STEP_END=$(date +%s.%N)
         echo "TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+        # Report failed codeunits
+        if [ -n "$FAILED_CUS" ]; then
+          echo ""
+          echo "Failed codeunits:$FAILED_CUS"
+        fi
 
     - name: Record metrics
       if: always()
@@ -408,3 +436,9 @@ jobs:
         echo "Publish extensions:     ${PUBLISH_DURATION:-n/a}s"
         echo "Run tests:              ${TEST_DURATION:-n/a}s"
         echo "Total:                  ${TOTAL}s"
+        echo ""
+        echo "=== Test Results ==="
+        echo "Codeunits total:  ${TEST_TOTAL:-n/a}"
+        echo "Codeunits passed: ${TEST_PASSED:-n/a}"
+        echo "Codeunits failed: ${TEST_FAILED:-n/a}"
+        echo "Codeunits errors: ${TEST_ERRORS:-n/a}"
