@@ -247,7 +247,7 @@ jobs:
         # Wait for custom API (TestRunner extension)
         echo "Waiting for TestRunner API..."
         for i in $(seq 1 24); do
-          RESP=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 -u "$AUTH" "$API" 2>/dev/null)
+          RESP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -u "$AUTH" "$API" 2>/dev/null || true)
           [ "$RESP" = "200" ] && { echo "Custom API ready"; break; }
           echo "  Waiting... (HTTP $RESP)"
           sleep 5
