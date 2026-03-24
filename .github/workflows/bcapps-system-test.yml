@@ -95,6 +95,49 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
+    - name: Prepare runtime patches
+      run: |
+        STEP_START=$(date +%s.%N)
+        cd aldirectcompile
+        ARTIFACTS_PATH="$(cd .. && pwd)/bc-artifacts"
+        SVC_DIR=$(find "$ARTIFACTS_PATH/platform/ServiceTier" -name "Microsoft.Dynamics.Nav.Server.dll" -printf "%h\n" 2>/dev/null | head -1)
+
+        # 1. Copy .NET 8 reference assemblies (non-R2R, needed for Cecil type resolution)
+        REF_DIR=$(find /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref -maxdepth 2 -type d -name "net8.0" 2>/dev/null | head -1)
+        if [ -n "$REF_DIR" ]; then
+          cp "$REF_DIR"/*.dll StartupHook/refasm/
+          echo "Copied $(ls StartupHook/refasm/*.dll | wc -l) reference assemblies"
+        fi
+
+        # 2. Build merged type-forward assemblies (netstandard, OpenXml, Drawing, Core)
+        echo "Building merged assemblies..."
+        cd tools/MergeNetstandard
+        PLATFORM_DIR="$ARTIFACTS_PATH/platform" dotnet run 2>&1 | tail -5
+        cd ../..
+
+        # 3. Binary-patch CodeAnalysis.dll and Mono.Cecil.dll
+        #    These fix Linux-specific crashes in the AL compiler's type loader
+        if [ -f tools/PatchCecil/PatchCecil.csproj ]; then
+          echo "Patching DLLs..."
+          cd tools/PatchCecil
+          PLATFORM_DIR="$ARTIFACTS_PATH/platform" dotnet run 2>&1 | tail -5
+          cd ../..
+        else
+          echo "WARNING: PatchCecil tool not found — patched DLLs will be missing"
+          echo "  Copy CodeAnalysis.dll and Mono.Cecil.dll manually to StartupHook/patched/"
+        fi
+
+        # 4. Copy MockTest.dll from artifacts
+        MOCK_DLL=$(find "$ARTIFACTS_PATH/platform" -path "*/Mock Assemblies/MockTest.dll" 2>/dev/null | head -1)
+        [ -n "$MOCK_DLL" ] && cp "$MOCK_DLL" StartupHook/testdata/MockTest.dll && echo "Copied MockTest.dll"
+
+        echo "Patched: $(ls StartupHook/patched/*.dll 2>/dev/null | wc -l) DLLs"
+        echo "Refasm: $(ls StartupHook/refasm/*.dll 2>/dev/null | wc -l) DLLs"
+
+        cd ..
+        STEP_END=$(date +%s.%N)
+        echo "PATCH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
     - name: Start BC service tier
       run: |
         STEP_START=$(date +%s.%N)
@@ -323,6 +366,7 @@ jobs:
         echo "=== Pipeline Timing ==="
         echo "Setup (clone + build):  ${SETUP_DURATION:-n/a}s"
         echo "Download artifacts:     ${DOWNLOAD_DURATION:-n/a}s"
+        echo "Prepare patches:        ${PATCH_DURATION:-n/a}s"
         echo "BC container start:     ${CONTAINER_DURATION:-n/a}s"
         echo "Publish extensions:     ${PUBLISH_DURATION:-n/a}s"
         echo "Demo data init:         ${DEMODATA_DURATION:-n/a}s"
