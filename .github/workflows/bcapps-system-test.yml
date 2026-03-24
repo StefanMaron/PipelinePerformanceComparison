@@ -228,11 +228,9 @@ jobs:
         sed -i 's/assembly("System.Drawing")/assembly("System.Drawing.Common")/' \
           "bcapps-temp/src/System Application/App/DotNet Aliases/src/dotnet.al" 2>/dev/null
 
-        # Patch FeatureKeyTest: comment out references to 'Start Date/Time' field
-        # (field doesn't exist in v27.5 artifact System Application)
-        sed -i "s/\.'Start Date\/Time'/.\\'Start Date\\/Time'/" \
-          "bcapps-temp/src/System Application/Test/Feature Key/src/FeatureKeyTest.Codeunit.al" 2>/dev/null || true
-        sed -i "/Start Date\/Time/s/^/\/\//" \
+        # Restore backslashes in field names that the global s|\\|/|g broke
+        # (e.g. "Start Date\Time" field name in FeatureKeyTest)
+        sed -i 's|"Start Date/Time"|"Start Date\\Time"|g' \
           "bcapps-temp/src/System Application/Test/Feature Key/src/FeatureKeyTest.Codeunit.al" 2>/dev/null
 
         # .NET 8 reference assemblies for AL compiler probing
