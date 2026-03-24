@@ -235,9 +235,12 @@ jobs:
         echo "PROBING_PATHS=$PROBING" >> $GITHUB_ENV
         echo "Assembly probing: $PROBING"
 
-        # Fix backslash paths in BCApps AL files (Linux AL compiler needs forward slashes)
-        find bcapps-temp/src/System\ Application -name "*.al" -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
-        echo "Fixed backslash paths"
+        # Fix backslash paths in ControlAddIn resource declarations only
+        # (Scripts, StartupScript, RefreshScript, RecreateScript, StyleSheets lines)
+        # Do NOT replace backslashes globally — AL uses \ in field names like "Start Date\Time"
+        find bcapps-temp/src/System\ Application -name "*.al" \
+          -exec sed -i '/^\s*\(Scripts\|StartupScript\|RefreshScript\|RecreateScript\|StyleSheets\)\s*=/s|\\|/|g' {} \; 2>/dev/null
+        echo "Fixed backslash paths in ControlAddIn resource declarations"
 
         STEP_END=$(date +%s.%N)
         echo "PREPARE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
