@@ -308,11 +308,16 @@ jobs:
 
         publish_app() {
           local FILE="$1" NAME="$2"
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 180 \
+          RESP=$(curl -s -w "\n%{http_code}" --max-time 180 \
             -u "$AUTH" -X POST \
             -F "file=@$FILE;type=application/octet-stream" "$DEV")
+          HTTP=$(echo "$RESP" | tail -1)
           echo "  $NAME: HTTP $HTTP"
-          [ "$HTTP" = "200" ] || { echo "ERROR: Failed to publish $NAME"; return 1; }
+          if [ "$HTTP" != "200" ]; then
+            echo "$RESP" | head -1 | python3 -c "import json,sys; print(json.load(sys.stdin).get('Message','')[:500])" 2>/dev/null || true
+            echo "ERROR: Failed to publish $NAME"
+            return 1
+          fi
         }
 
         # System Application (compiled from BCApps source)
