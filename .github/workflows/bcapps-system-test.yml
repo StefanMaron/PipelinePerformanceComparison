@@ -278,6 +278,7 @@ jobs:
           "/assemblyProbingPaths:$PROBING_PATHS" \
           || echo "WARNING: Test Library compilation failed"
         find "bcapps-temp/src/System Application/Test Library" -maxdepth 1 -name "*.app" -exec cp {} .alpackages/ \; 2>/dev/null
+        find "bcapps-temp/src/System Application/Test Library" -maxdepth 1 -name "*.app" -exec cp {} . \; 2>/dev/null
         STEP_END=$(date +%s.%N)
         echo "TESTLIB_COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
