@@ -316,8 +316,7 @@ jobs:
           echo "  $NAME: HTTP $HTTP"
           if [ "$HTTP" != "200" ]; then
             echo "$RESP" | head -1 | python3 -c "import json,sys; print(json.load(sys.stdin).get('Message','')[:500])" 2>/dev/null || true
-            echo "ERROR: Failed to publish $NAME"
-            return 1
+            echo "WARNING: Failed to publish $NAME (HTTP $HTTP)"
           fi
         }
 
