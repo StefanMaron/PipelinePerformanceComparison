@@ -236,10 +236,7 @@ jobs:
         echo "Assembly probing: $PROBING"
 
         # Fix backslash paths in BCApps AL files (Linux AL compiler needs forward slashes)
-        # Exclude FeatureKeyTest which uses backslashes in field names like "Start Date\Time"
-        find bcapps-temp/src/System\ Application -name "*.al" \
-          ! -name "FeatureKeyTest.Codeunit.al" \
-          -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
+        find bcapps-temp/src/System\ Application -name "*.al" -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
         echo "Fixed backslash paths"
 
         STEP_END=$(date +%s.%N)
@@ -316,7 +313,8 @@ jobs:
           echo "  $NAME: HTTP $HTTP"
           if [ "$HTTP" != "200" ]; then
             echo "$RESP" | head -1 | python3 -c "import json,sys; print(json.load(sys.stdin).get('Message','')[:500])" 2>/dev/null || true
-            echo "WARNING: Failed to publish $NAME (HTTP $HTTP)"
+            echo "ERROR: Failed to publish $NAME (HTTP $HTTP)"
+            return 1
           fi
         }
 
