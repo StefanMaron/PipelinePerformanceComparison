@@ -228,6 +228,13 @@ jobs:
         sed -i 's/assembly("System.Drawing")/assembly("System.Drawing.Common")/' \
           "bcapps-temp/src/System Application/App/DotNet Aliases/src/dotnet.al" 2>/dev/null
 
+        # Patch FeatureKeyTest: comment out references to 'Start Date/Time' field
+        # (field doesn't exist in v27.5 artifact System Application)
+        sed -i "s/\.'Start Date\/Time'/.\\'Start Date\\/Time'/" \
+          "bcapps-temp/src/System Application/Test/Feature Key/src/FeatureKeyTest.Codeunit.al" 2>/dev/null || true
+        sed -i "/Start Date\/Time/s/^/\/\//" \
+          "bcapps-temp/src/System Application/Test/Feature Key/src/FeatureKeyTest.Codeunit.al" 2>/dev/null
+
         # .NET 8 reference assemblies for AL compiler probing
         REF_DIR=$(find "$DOTNET_ROOT/packs/Microsoft.NETCore.App.Ref" /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref \
           -maxdepth 3 -type d -name "net8.0" 2>/dev/null | head -1)
