@@ -209,6 +209,9 @@ jobs:
           for dll in System.Drawing.Common.dll System.IdentityModel.Tokens.Jwt.dll System.Private.ServiceModel.dll; do
             find "$SVC_DIR" -name "$dll" 2>/dev/null | head -1 | xargs -I{} cp {} service-dlls/ 2>/dev/null
           done
+          # DrawingStub provides System.Drawing.Common types for AL compiler on Linux
+          DRAWING_STUB="aldirectcompile/StartupHook/DrawingStub/bin/Release/net8.0/System.Drawing.Common.dll"
+          [ -f "$DRAWING_STUB" ] && cp "$DRAWING_STUB" service-dlls/System.Drawing.Common.dll && echo "Added DrawingStub"
           find bc-artifacts/platform -path "*Test Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
           find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
           echo "Service DLLs: $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
