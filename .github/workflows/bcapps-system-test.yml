@@ -441,8 +441,8 @@ jobs:
             continue
           fi
 
-          # Execute (no timeout — let it run as long as it needs)
-          curl -sf -o /dev/null --max-time 600 -u "$AUTH" -X POST \
+          # Execute — no timeout, let BC take as long as it needs
+          curl -sf -o /dev/null -u "$AUTH" -X POST \
             -H "Content-Type: application/json" \
             "$API($ID)/Microsoft.NAV.runCodeunit" 2>/dev/null || true
 
