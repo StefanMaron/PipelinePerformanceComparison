@@ -220,8 +220,12 @@ jobs:
           echo "Service DLLs: $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
         fi
 
-        # Patch: comment out FaultException alias
+        # Patch dotnet.al: comment out FaultException alias (Cecil can't resolve type forwarding)
         sed -i '/assembly("System.ServiceModel.Primitives")/,/^    }/{s/^/\/\//}' \
+          "bcapps-temp/src/System Application/App/DotNet Aliases/src/dotnet.al" 2>/dev/null
+        # Patch dotnet.al: redirect ImageFormatConverter from System.Drawing to System.Drawing.Common
+        # (System.Drawing is a type-forwarding shim that Cecil can't follow without patched CodeAnalysis.dll)
+        sed -i 's/assembly("System.Drawing")/assembly("System.Drawing.Common")/' \
           "bcapps-temp/src/System Application/App/DotNet Aliases/src/dotnet.al" 2>/dev/null
 
         # .NET 8 reference assemblies for AL compiler probing
