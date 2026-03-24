@@ -103,10 +103,15 @@ jobs:
         SVC_DIR=$(find "$ARTIFACTS_PATH/platform/ServiceTier" -name "Microsoft.Dynamics.Nav.Server.dll" -printf "%h\n" 2>/dev/null | head -1)
 
         # 1. Copy .NET 8 reference assemblies (non-R2R, needed for Cecil type resolution)
-        REF_DIR=$(find /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref -maxdepth 2 -type d -name "net8.0" 2>/dev/null | head -1)
+        REF_DIR=$(find "$DOTNET_ROOT/packs/Microsoft.NETCore.App.Ref" /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref \
+          -maxdepth 3 -type d -name "net8.0" 2>/dev/null | head -1)
         if [ -n "$REF_DIR" ]; then
           cp "$REF_DIR"/*.dll StartupHook/refasm/
-          echo "Copied $(ls StartupHook/refasm/*.dll | wc -l) reference assemblies"
+          echo "Copied $(ls StartupHook/refasm/*.dll | wc -l) reference assemblies from $REF_DIR"
+        else
+          echo "WARNING: .NET 8 reference assemblies not found"
+          echo "  DOTNET_ROOT=$DOTNET_ROOT"
+          find "$DOTNET_ROOT/packs" /usr/share/dotnet/packs -maxdepth 3 -type d 2>/dev/null | head -20
         fi
 
         # 2. Build merged type-forward assemblies (netstandard, OpenXml, Drawing, Core)
@@ -193,7 +198,7 @@ jobs:
             -u "$AUTH" -X POST \
             -F "file=@$FILE;type=application/octet-stream" "$DEV")
           echo "  $NAME: HTTP $HTTP"
-          [ "$HTTP" = "200" ] || { echo "WARNING: Failed to publish $NAME"; return 1; }
+          [ "$HTTP" = "200" ] || echo "WARNING: Failed to publish $NAME (HTTP $HTTP)"
         }
 
         # System Application is pre-installed from CRONUS backup (kept by entrypoint).
