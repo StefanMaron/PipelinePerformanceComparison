@@ -236,10 +236,10 @@ jobs:
         echo "Assembly probing: $PROBING"
 
         # Fix backslash paths in BCApps AL files (Linux AL compiler needs forward slashes)
-        find bcapps-temp/src/System\ Application -name "*.al" -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
-        # Restore backslashes in field names that the global fix broke
-        sed -i 's|"Start Date/Time"|"Start Date\\Time"|g' \
-          "bcapps-temp/src/System Application/Test/Feature Key/src/FeatureKeyTest.Codeunit.al" 2>/dev/null
+        # Exclude FeatureKeyTest which uses backslashes in field names like "Start Date\Time"
+        find bcapps-temp/src/System\ Application -name "*.al" \
+          ! -name "FeatureKeyTest.Codeunit.al" \
+          -exec sed -i 's|\\|/|g' {} \; 2>/dev/null
         echo "Fixed backslash paths"
 
         STEP_END=$(date +%s.%N)
