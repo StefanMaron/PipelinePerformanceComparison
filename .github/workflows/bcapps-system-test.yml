@@ -441,10 +441,26 @@ jobs:
             continue
           fi
 
-          # Execute — no timeout, let BC take as long as it needs
-          curl -sf -o /dev/null -u "$AUTH" -X POST \
+          # Execute with 10 min timeout — long enough for slow tests, catches genuinely hung ones
+          timeout 600 curl -sf -o /dev/null -u "$AUTH" -X POST \
             -H "Content-Type: application/json" \
-            "$API($ID)/Microsoft.NAV.runCodeunit" 2>/dev/null || true
+            "$API($ID)/Microsoft.NAV.runCodeunit" 2>/dev/null
+          CURL_EXIT=$?
+
+          if [ $CURL_EXIT -eq 124 ]; then
+            # Timeout — test is hung. Restart BC to clear the zombie session.
+            FAILED=$((FAILED + 1))
+            FAILED_CUS="$FAILED_CUS $CU_ID"
+            echo "  HANG  CU $CU_ID: killed after 600s — restarting BC"
+            cd aldirectcompile && docker compose restart bc 2>/dev/null && cd ..
+            # Wait for BC to come back
+            for j in $(seq 1 60); do
+              curl -sf -o /dev/null --max-time 5 -u "$AUTH" \
+                "http://localhost:7048/$INSTANCE/ODataV4/Company" 2>/dev/null && break
+              sleep 5
+            done
+            continue
+          fi
 
           # Get result
           RESULT=$(curl -sf --max-time 10 -u "$AUTH" "$API($ID)" 2>/dev/null | \
