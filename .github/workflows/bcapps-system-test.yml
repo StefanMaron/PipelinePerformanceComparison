@@ -442,10 +442,10 @@ jobs:
           fi
 
           # Execute with 10 min timeout — long enough for slow tests, catches genuinely hung ones
+          CURL_EXIT=0
           timeout 600 curl -sf -o /dev/null -u "$AUTH" -X POST \
             -H "Content-Type: application/json" \
-            "$API($ID)/Microsoft.NAV.runCodeunit" 2>/dev/null
-          CURL_EXIT=$?
+            "$API($ID)/Microsoft.NAV.runCodeunit" 2>/dev/null || CURL_EXIT=$?
 
           if [ $CURL_EXIT -eq 124 ]; then
             # Timeout — test is hung. Restart BC to clear the zombie session.
