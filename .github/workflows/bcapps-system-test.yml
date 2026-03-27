@@ -279,7 +279,7 @@ jobs:
     - name: Publish extensions to BC
       run: |
         STEP_START=$(date +%s.%N)
-        DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=forcesync"
+        DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=synchronize"
         AUTH="admin:Admin123!"
 
         publish_app() {
