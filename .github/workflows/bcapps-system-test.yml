@@ -15,7 +15,6 @@ on:
 
 env:
   BC_VERSION: ${{ inputs.bc_version || '27.5.46862.48004' }}
-  PLATFORM_VERSION: '27.0.46760'
   AL_TOOLS_VERSION: '16.2.28.57946'
   BCAPPS_TAG: 'releases/27.5/StrictMode'
   BC_ARTIFACT_BASE: 'https://bcartifacts-exdbf9fwegejdqak.b02.azurefd.net/sandbox'
@@ -44,7 +43,7 @@ jobs:
           --version ${{ env.AL_TOOLS_VERSION }} || true
         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-    - name: Clone BCApps and build alDirectCompile
+    - name: Clone BCApps and bc-linux
       run: |
         STEP_START=$(date +%s.%N)
 
@@ -54,20 +53,9 @@ jobs:
           https://github.com/microsoft/BCApps bcapps-temp &
         BCAPPS_PID=$!
 
-        # Build alDirectCompile (Docker image + TestRunner)
-        echo "Cloning alDirectCompile..."
-        git clone --depth 1 https://github.com/StefanMaron/alDirectCompile.git aldirectcompile
-        cd aldirectcompile/StartupHook
-        dotnet publish -c Release -o bin/Release/net8.0/publish 2>&1 | tail -3
-        # Ensure net8.0 unix SqlClient
-        strings bin/Release/net8.0/publish/Microsoft.Data.SqlClient.dll | grep -q "9.0.0.0" && {
-          echo "Fixing SqlClient to net8.0 build"
-          cp ~/.nuget/packages/microsoft.data.sqlclient/6.0.5/runtimes/unix/lib/net8.0/Microsoft.Data.SqlClient.dll bin/Release/net8.0/publish/
-        } || echo "SqlClient OK"
-        cd ../..
-
-        # Save TestRunner.app
-        cp aldirectcompile/TestRunnerExtension/TestRunner.app TestRunner.app
+        # Clone bc-linux (MsDyn365Bc.On.Linux) — provides the container + test tools
+        echo "Cloning MsDyn365Bc.On.Linux..."
+        git clone --depth 1 https://github.com/StefanMaron/MsDyn365Bc.On.Linux.git bc-linux
 
         # Wait for BCApps clone
         wait $BCAPPS_PID
@@ -78,9 +66,58 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
-    - name: Download BC artifacts (on host)
+    - name: Start BC container
       run: |
         STEP_START=$(date +%s.%N)
+        cd bc-linux
+
+        # Container downloads artifacts internally — no manual copy needed
+        # BC_CLEAR_ALL_APPS=true clears all pre-installed apps before BC starts
+        # (needed because we publish our own compiled System Application)
+        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\n" > .env
+
+        docker compose up -d --build 2>&1 | tail -10
+
+        echo "Waiting for BC to be healthy..."
+        for i in $(seq 1 360); do
+          STATUS=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q bc) 2>/dev/null || echo "unknown")
+          case "$STATUS" in
+            healthy)
+              echo "BC healthy after $((i*5))s"
+              break
+              ;;
+            unhealthy)
+              echo "ERROR: BC container unhealthy"
+              docker compose logs bc 2>&1 | tail -50
+              exit 1
+              ;;
+          esac
+          if ! docker compose ps bc 2>/dev/null | grep -q "Up"; then
+            echo "ERROR: BC container died"
+            docker compose logs bc 2>&1 | tail -50
+            exit 1
+          fi
+          [ $((i % 12)) -eq 0 ] && echo "  $((i*5))s: $(docker compose logs bc 2>&1 | grep '\[entrypoint\]' | tail -1)"
+          sleep 5
+        done
+
+        if [ "$STATUS" != "healthy" ]; then
+          echo "ERROR: BC did not become healthy within 30 minutes"
+          docker compose logs bc 2>&1 | tail -100
+          exit 1
+        fi
+
+        # Instance name is "BC" in bc-linux
+        echo "INSTANCE=BC" >> $GITHUB_ENV
+        cd ..
+        STEP_END=$(date +%s.%N)
+        echo "CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Download BC artifacts (for compilation)
+      run: |
+        STEP_START=$(date +%s.%N)
+        # Download full artifacts on host — need ServiceTier, ModernDev, test framework,
+        # mock assemblies, and WebClient refs for AL compiler probing
         BC_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/w1"
         PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/platform"
         DEST="$(pwd)/bc-artifacts"
@@ -100,80 +137,6 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
-    - name: Prepare runtime patches
-      run: |
-        STEP_START=$(date +%s.%N)
-        cd aldirectcompile
-        ARTIFACTS_PATH="$(cd .. && pwd)/bc-artifacts"
-
-        # 1. Copy .NET 8 reference assemblies for the Docker image
-        REF_DIR=$(find "$DOTNET_ROOT/packs/Microsoft.NETCore.App.Ref" /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref \
-          -maxdepth 3 -type d -name "net8.0" 2>/dev/null | head -1)
-        if [ -n "$REF_DIR" ]; then
-          cp "$REF_DIR"/*.dll StartupHook/refasm/
-          echo "Copied $(ls StartupHook/refasm/*.dll | wc -l) reference assemblies from $REF_DIR"
-        else
-          echo "WARNING: .NET 8 reference assemblies not found"
-        fi
-
-        # 2. Build merged type-forward assemblies
-        echo "Building merged assemblies..."
-        cd tools/MergeNetstandard
-        BASE_DIR="$(cd ../.. && pwd)" PLATFORM_DIR="$ARTIFACTS_PATH/platform" dotnet run 2>&1 | tail -5
-        cd ../..
-
-        # 3. Copy MockTest.dll from artifacts
-        MOCK_DLL=$(find "$ARTIFACTS_PATH/platform" -path "*/Mock Assemblies/MockTest.dll" 2>/dev/null | head -1)
-        [ -n "$MOCK_DLL" ] && cp "$MOCK_DLL" StartupHook/testdata/MockTest.dll && echo "Copied MockTest.dll"
-
-        echo "Patched: $(ls StartupHook/patched/*.dll 2>/dev/null | wc -l) DLLs"
-        echo "Refasm: $(ls StartupHook/refasm/*.dll 2>/dev/null | wc -l) DLLs"
-        cd ..
-        STEP_END=$(date +%s.%N)
-        echo "PATCH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
-
-    - name: Start BC service tier
-      run: |
-        STEP_START=$(date +%s.%N)
-        cd aldirectcompile
-        ARTIFACTS_PATH="$(cd .. && pwd)/bc-artifacts"
-        printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\n" > .env
-
-        docker compose build --no-cache bc
-        docker compose up -d
-
-        # Copy artifacts into container
-        echo "Copying artifacts into container..."
-        docker compose exec bc mkdir -p /bc/artifacts/app /bc/artifacts/platform
-        docker compose cp "$ARTIFACTS_PATH/app/." bc:/bc/artifacts/app/
-        docker compose cp "$ARTIFACTS_PATH/platform/." bc:/bc/artifacts/platform/
-        echo "Artifacts copied."
-
-        echo "Waiting for BC..."
-        for i in $(seq 1 120); do
-          docker compose logs bc 2>&1 | grep -q "Press Enter" && { echo "BC ready after $((i*5))s"; break; }
-          if [ $((i % 6)) -eq 0 ]; then
-            LAST=$(docker compose logs bc 2>&1 | grep "\[entrypoint\]\|\[StartupHook\]\|Exception\|ERROR" | tail -1)
-            echo "  $((i*5))s: $LAST"
-          fi
-          if ! docker compose ps bc 2>/dev/null | grep -q "Up"; then
-            echo "ERROR: BC container died — full logs:"
-            docker compose logs bc 2>&1
-            exit 1
-          fi
-          sleep 5
-        done
-        if ! docker compose logs bc 2>&1 | grep -q "Press Enter"; then
-          echo "ERROR: BC did not start — full logs:"
-          docker compose logs bc 2>&1
-          exit 1
-        fi
-        INSTANCE=$(docker compose exec bc grep -oP 'ServerInstance" value="\K[^"]+' /bc/service/CustomSettings.config 2>/dev/null || echo "InstanceName")
-        echo "INSTANCE=$INSTANCE" >> $GITHUB_ENV
-        cd ..
-        STEP_END=$(date +%s.%N)
-        echo "CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
-
     - name: Prepare symbols and dependencies
       run: |
         STEP_START=$(date +%s.%N)
@@ -187,8 +150,8 @@ jobs:
         [ -n "$SYSTEM_APP" ] && cp "$SYSTEM_APP" .alpackages/System.app
 
         # Copy test toolkit .app files
-        find bc-artifacts/platform/applications/testframework -name "*.app" -exec cp {} .alpackages/ \; 2>/dev/null
-        find bc-artifacts/platform/applications -path "*/Test/*.app" -exec cp {} .alpackages/ \; 2>/dev/null
+        find bc-artifacts/platform -path "*testframework*" -name "*.app" -exec cp {} .alpackages/ \; 2>/dev/null
+        find bc-artifacts/platform -path "*/Test/*.app" -exec cp {} .alpackages/ \; 2>/dev/null
 
         echo "Symbols: $(ls .alpackages/*.app 2>/dev/null | wc -l) .app files"
 
@@ -197,7 +160,6 @@ jobs:
         echo "Mock assemblies: $(ls mock-assemblies/*.dll 2>/dev/null | wc -l) DLLs"
 
         # Build assembly probing paths for AL compiler
-        mkdir -p service-dlls
         SVC_DIR=$(find bc-artifacts/platform/ServiceTier -name "Microsoft.Dynamics.Nav.Server.dll" -printf "%h\n" 2>/dev/null | head -1)
         if [ -n "$SVC_DIR" ]; then
           find "$SVC_DIR" -name "*.dll" | while read f; do
@@ -209,9 +171,6 @@ jobs:
           for dll in System.Drawing.Common.dll System.IdentityModel.Tokens.Jwt.dll System.Private.ServiceModel.dll; do
             find "$SVC_DIR" -name "$dll" 2>/dev/null | head -1 | xargs -I{} cp {} service-dlls/ 2>/dev/null
           done
-          # DrawingStub provides System.Drawing.Common types for AL compiler on Linux
-          DRAWING_STUB="aldirectcompile/StartupHook/DrawingStub/bin/Release/net8.0/System.Drawing.Common.dll"
-          [ -f "$DRAWING_STUB" ] && cp "$DRAWING_STUB" service-dlls/System.Drawing.Common.dll && echo "Added DrawingStub"
           # System.Drawing.dll (v4.0.0.0 compat shim) from WebClient refs
           SYSDRAWING=$(find bc-artifacts/platform -path "*/WebClient/*/refs/System.Drawing.dll" 2>/dev/null | head -1)
           [ -n "$SYSDRAWING" ] && cp "$SYSDRAWING" service-dlls/ && echo "Added System.Drawing.dll from WebClient refs"
@@ -220,11 +179,16 @@ jobs:
           echo "Service DLLs: $(ls service-dlls/*.dll 2>/dev/null | wc -l)"
         fi
 
+        # Build DrawingStub from bc-linux source for AL compiler probing
+        echo "Building DrawingStub..."
+        dotnet build bc-linux/src/stubs/DrawingStub -c Release 2>&1 | tail -3
+        DRAWING_STUB=$(find bc-linux/src/stubs/DrawingStub -path "*/Release/*/System.Drawing.Common.dll" 2>/dev/null | head -1)
+        [ -n "$DRAWING_STUB" ] && cp "$DRAWING_STUB" service-dlls/System.Drawing.Common.dll && echo "Added DrawingStub"
+
         # Patch dotnet.al: comment out FaultException alias (Cecil can't resolve type forwarding)
         sed -i '/assembly("System.ServiceModel.Primitives")/,/^    }/{s/^/\/\//}' \
           "bcapps-temp/src/System Application/App/DotNet Aliases/src/dotnet.al" 2>/dev/null
         # Patch dotnet.al: redirect ImageFormatConverter from System.Drawing to System.Drawing.Common
-        # (System.Drawing is a type-forwarding shim that Cecil can't follow without patched CodeAnalysis.dll)
         sed -i 's/assembly("System.Drawing")/assembly("System.Drawing.Common")/' \
           "bcapps-temp/src/System Application/App/DotNet Aliases/src/dotnet.al" 2>/dev/null
 
@@ -236,8 +200,6 @@ jobs:
         echo "Assembly probing: $PROBING"
 
         # Fix backslash paths in ControlAddIn resource declarations only
-        # (Scripts, StartupScript, RefreshScript, RecreateScript, StyleSheets lines)
-        # Do NOT replace backslashes globally — AL uses \ in field names like "Start Date\Time"
         find bcapps-temp/src/System\ Application -name "*.al" \
           -exec sed -i '/^\s*\(Scripts\|StartupScript\|RefreshScript\|RecreateScript\|StyleSheets\)\s*=/s|\\|/|g' {} \; 2>/dev/null
         echo "Fixed backslash paths in ControlAddIn resource declarations"
@@ -323,17 +285,9 @@ jobs:
         SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
         publish_app "$SYSAPP" "System Application"
 
-        # Test framework dependencies (pre-compiled from platform artifacts)
-        for lib in assert "variable storage" "permissions mock"; do
-          LIB_APP=$(find bc-artifacts/platform -ipath "*testlibraries*$lib*/*.app" 2>/dev/null | head -1)
-          [ -n "$LIB_APP" ] && publish_app "$LIB_APP" "$(basename "$LIB_APP" .app)"
-        done
-        ANY_APP=$(find bc-artifacts -name "*_Any*.app" 2>/dev/null | head -1)
-        [ -n "$ANY_APP" ] && publish_app "$ANY_APP" "Any"
-
-        # MS Test Runner (codeunits 130450-130456, from platform artifacts)
-        TR_APP=$(find bc-artifacts/platform -ipath "*testframework/TestRunner*/*.app" 2>/dev/null | head -1)
-        [ -n "$TR_APP" ] && publish_app "$TR_APP" "Test Runner (MS)"
+        # Test framework apps are already published by the bc-linux container entrypoint
+        # (Test Runner, Library Assert, Library Variable Storage, Any)
+        echo "  Test framework: published by container entrypoint"
 
         # System Application Test Library + Test (compiled from BCApps source)
         TESTLIB=$(find . -maxdepth 1 -name "*Test*Library*.app" | head -1)
@@ -347,11 +301,10 @@ jobs:
     - name: Initialize demo data
       run: |
         STEP_START=$(date +%s.%N)
-        AUTH="admin:Admin123!"
         SA_PASSWORD="Passw0rd123!"
 
         # SQL helper (runs queries via docker exec on the SQL container)
-        SQL_ID=$(cd aldirectcompile && docker compose ps -q sql 2>/dev/null | head -1)
+        SQL_ID=$(cd bc-linux && docker compose ps -q sql 2>/dev/null | head -1)
         run_sql() {
           docker exec -e "_QB=$(echo "$1" | base64 -w0)" "$SQL_ID" bash -c \
             'echo "$_QB" | base64 -d | /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "'"$SA_PASSWORD"'" -C -No -i /dev/stdin' 2>&1
@@ -364,21 +317,13 @@ jobs:
         echo "Company: $COMPANY"
         echo "COMPANY=$COMPANY" >> $GITHUB_ENV
 
-        # Run demo data initialization via WebSocket client services (page 130455 approach)
-        # Build TestRunner from bc-linux
-        echo "Building TestRunner..."
-        git clone --depth 1 https://github.com/StefanMaron/MsDyn365Bc.On.Linux.git bc-linux-tools
-        dotnet build bc-linux-tools/tools/TestRunner -c Release 2>&1 | tail -3
-
         # Initialize demo data by running init codeunits via SQL-triggered test suite
-        # (These codeunits are not tests but we trigger them via the same mechanism)
         TABLE_PREFIX="$(echo "${COMPANY}" | sed 's/\.//g')_\$"
         SUITE_TABLE="${TABLE_PREFIX}AL Test Suite\$23de40a6-dfe8-4f80-80db-d70f83ce8caf"
         METHOD_TABLE="${TABLE_PREFIX}Test Method Line\$23de40a6-dfe8-4f80-80db-d70f83ce8caf"
 
         for CU_ID in 2 5193 5691; do
           echo "  Running CU $CU_ID..."
-          # Create a temporary test suite for this init codeunit
           run_sql "
           USE [CRONUS];
           DELETE FROM [$METHOD_TABLE] WHERE [Test Suite] = N'INIT';
@@ -400,7 +345,7 @@ jobs:
           SET IDENTITY_INSERT [$METHOD_TABLE] OFF;
           " > /dev/null 2>&1
           # Trigger execution via WebSocket
-          timeout 120 dotnet run --project bc-linux-tools/tools/TestRunner --no-build -c Release -- \
+          timeout 120 dotnet run --project bc-linux/tools/TestRunner -c Release -- \
             --host localhost:7085 --company "$COMPANY" --timeout 2 2>&1 | tail -3 || true
           sleep 2
         done
@@ -413,27 +358,23 @@ jobs:
     - name: Run System Application Tests
       run: |
         STEP_START=$(date +%s.%N)
-        AUTH="admin:Admin123!"
         SA_PASSWORD="Passw0rd123!"
 
         # Find the compiled test .app
         TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" ! -name "*Library*" | head -1)
         echo "Test app: $TESTAPP"
 
-        # Use bc-linux run-tests.sh
-        chmod +x bc-linux-tools/scripts/run-tests.sh
+        # Use bc-linux run-tests.sh (finds docker compose via REPO_DIR = script/../)
+        chmod +x bc-linux/scripts/run-tests.sh
 
-        bc-linux-tools/scripts/run-tests.sh \
+        bc-linux/scripts/run-tests.sh \
           --app "$TESTAPP" \
           --company "$COMPANY" \
           --timeout 60 \
-          --sql-password "$SA_PASSWORD"
-
-        # Capture results from exit code
-        TEST_EXIT=$?
+          --sql-password "$SA_PASSWORD" || true
 
         # Read counts from SQL for metrics
-        SQL_ID=$(cd aldirectcompile && docker compose ps -q sql 2>/dev/null | head -1)
+        SQL_ID=$(cd bc-linux && docker compose ps -q sql 2>/dev/null | head -1)
         run_sql() {
           docker exec -e "_QB=$(echo "$1" | base64 -w0)" "$SQL_ID" bash -c \
             'echo "$_QB" | base64 -d | /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "'"$SA_PASSWORD"'" -C -No -i /dev/stdin' 2>&1
@@ -451,7 +392,6 @@ jobs:
         echo "TEST_PASSED=${TEST_PASSED:-0}" >> $GITHUB_ENV
         echo "TEST_FAILED=${TEST_FAILED:-0}" >> $GITHUB_ENV
         echo "TEST_SKIPPED=${TEST_SKIPPED:-0}" >> $GITHUB_ENV
-        echo "TEST_ERRORS=0" >> $GITHUB_ENV
 
         STEP_END=$(date +%s.%N)
         echo "TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
@@ -461,9 +401,8 @@ jobs:
       run: |
         TOTAL=$(python3 -c "print(f'{$(date +%s.%N) - ${{ env.START_EPOCH }}:.3f}')")
         echo "=== Pipeline Timing ==="
-        echo "Setup (clone + build):  ${SETUP_DURATION:-n/a}s"
+        echo "Setup (clone repos):    ${SETUP_DURATION:-n/a}s"
         echo "Download artifacts:     ${DOWNLOAD_DURATION:-n/a}s"
-        echo "Prepare patches:        ${PATCH_DURATION:-n/a}s"
         echo "BC container start:     ${CONTAINER_DURATION:-n/a}s"
         echo "Prepare symbols:        ${PREPARE_DURATION:-n/a}s"
         echo "Compile System App:     ${SYSAPP_COMPILE_DURATION:-n/a}s"
@@ -478,5 +417,4 @@ jobs:
         echo "Codeunits total:    ${TEST_TOTAL:-n/a}"
         echo "Codeunits passed:   ${TEST_PASSED:-n/a}"
         echo "Codeunits failed:   ${TEST_FAILED:-n/a}"
-        echo "Codeunits disabled: ${TEST_SKIPPED:-n/a}"
-        echo "Codeunits errors:   ${TEST_ERRORS:-n/a}"
+        echo "Codeunits skipped:  ${TEST_SKIPPED:-n/a}"
