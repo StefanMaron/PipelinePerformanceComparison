@@ -95,9 +95,9 @@ jobs:
         STEP_START=$(date +%s.%N)
         cd bc-linux
 
-        # BC_CLEAR_ALL_APPS=true clears all pre-installed apps before BC starts
         # BC_ARTIFACT_URL=skip tells entrypoint to use externally provided artifacts
-        printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\n" > .env
+        # Don't use BC_CLEAR_ALL_APPS — it breaks AL Test Suite table visibility
+        printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\n" > .env
 
         # Override volumes to bind-mount host artifacts (avoids 6min duplicate download)
         cat > docker-compose.override.yml <<EOF
