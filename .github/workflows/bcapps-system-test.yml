@@ -373,6 +373,22 @@ jobs:
         STEP_START=$(date +%s.%N)
         SA_PASSWORD="Passw0rd123!"
 
+        # Diagnostic: check AL Test Suite tables exist and have data
+        SQL_ID=$(cd bc-linux && docker compose ps -q sql 2>/dev/null | head -1)
+        diag_sql() {
+          docker exec -e "_QB=$(echo "$1" | base64 -w0)" "$SQL_ID" bash -c \
+            'echo "$_QB" | base64 -d | /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "'"$SA_PASSWORD"'" -C -No -i /dev/stdin' 2>&1
+        }
+        echo "=== DB Diagnostics ==="
+        echo "AL Test Suite tables:"
+        diag_sql "USE [CRONUS]; SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME LIKE '%AL Test Suite%'" | grep -v "^-" | grep -v "^$" | grep -v "^(" | head -5
+        echo "Suite contents:"
+        TABLE_PREFIX="$(echo "${COMPANY}" | sed 's/\.//g')_\$"
+        diag_sql "USE [CRONUS]; SELECT [Name], [Test Runner Id] FROM [${TABLE_PREFIX}AL Test Suite\$23de40a6-dfe8-4f80-80db-d70f83ce8caf]" 2>&1 | head -5
+        echo "Test method count:"
+        diag_sql "USE [CRONUS]; SELECT COUNT(*) as cnt FROM [${TABLE_PREFIX}Test Method Line\$23de40a6-dfe8-4f80-80db-d70f83ce8caf] WHERE [Test Suite] = N'DEFAULT'" 2>&1 | head -5
+        echo "=== End Diagnostics ==="
+
         # Find the compiled test .app
         TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" ! -name "*Library*" | head -1)
         echo "Test app: $TESTAPP"
