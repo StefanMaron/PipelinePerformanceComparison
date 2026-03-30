@@ -358,8 +358,10 @@ jobs:
           SET IDENTITY_INSERT [$METHOD_TABLE] OFF;
           " > /dev/null 2>&1
           # Trigger execution via WebSocket
-          timeout 120 dotnet run --project bc-linux/tools/TestRunner -c Release -- \
-            --host localhost:7085 --company "$COMPANY" --timeout 2 2>&1 | tail -3 || true
+          if ! timeout 120 dotnet run --project bc-linux/tools/TestRunner -c Release -- \
+              --host localhost:7085 --company "$COMPANY" --suite INIT --timeout 2; then
+            echo "WARNING: Init CU $CU_ID runner exited with errors (see output above)"
+          fi
           sleep 2
         done
         # Clean up init suite
@@ -408,14 +410,16 @@ jobs:
 
         sql_count() { run_sql "$1" | grep -oP '^\s+\d+' | tr -d ' ' | tail -1; }
         TEST_TOTAL=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0")
-        TEST_PASSED=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0 AND [Result] IN (2,3)")
+        TEST_PASSED=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0 AND [Result] = 2")
         TEST_FAILED=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0 AND [Result] = 1")
-        TEST_SKIPPED=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0 AND [Result] = 0")
+        TEST_SKIPPED=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0 AND [Result] = 3")
+        TEST_NOT_RUN=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0 AND [Result] = 0")
 
         echo "TEST_TOTAL=${TEST_TOTAL:-0}" >> $GITHUB_ENV
         echo "TEST_PASSED=${TEST_PASSED:-0}" >> $GITHUB_ENV
         echo "TEST_FAILED=${TEST_FAILED:-0}" >> $GITHUB_ENV
         echo "TEST_SKIPPED=${TEST_SKIPPED:-0}" >> $GITHUB_ENV
+        echo "TEST_NOT_RUN=${TEST_NOT_RUN:-0}" >> $GITHUB_ENV
 
         STEP_END=$(date +%s.%N)
         echo "TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
@@ -442,3 +446,4 @@ jobs:
         echo "Codeunits passed:   ${TEST_PASSED:-n/a}"
         echo "Codeunits failed:   ${TEST_FAILED:-n/a}"
         echo "Codeunits skipped:  ${TEST_SKIPPED:-n/a}"
+        echo "Codeunits not run:  ${TEST_NOT_RUN:-n/a}"
