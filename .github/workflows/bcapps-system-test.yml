@@ -69,27 +69,19 @@ jobs:
       run: |
         # The container ships System Application 27.5.x with a high build number.
         # Our compiled apps from BCApps source are 27.5.0.0 which BC refuses to
-        # synchronize (lower version). Bump all app.json versions to 27.6.0.0.
+        # synchronize (lower version). Bump only the app's own version, NOT
+        # dependency versions (those must match the 27.5 symbol packages).
         echo "Patching app.json versions from 27.5 → 27.6..."
         find bcapps-temp/src/System\ Application -name "app.json" | while read f; do
           echo "  $f"
           python3 -c "
-        import json, re, sys
+        import json, re
         with open('$f', 'r') as fh:
-            content = fh.read()
-        data = json.loads(content)
-        # Bump app version
+            data = json.loads(fh.read())
         if 'version' in data:
             old = data['version']
             data['version'] = re.sub(r'^27\.5\.', '27.6.', old)
             print(f'    version: {old} → {data[\"version\"]}')
-        # Bump dependency versions
-        for dep in data.get('dependencies', []):
-            if 'version' in dep:
-                old = dep['version']
-                dep['version'] = re.sub(r'^27\.5\.', '27.6.', old)
-                if old != dep['version']:
-                    print(f'    dep {dep.get(\"name\",\"?\")}: {old} → {dep[\"version\"]}')
         with open('$f', 'w') as fh:
             json.dump(data, fh, indent=2)
             fh.write('\n')
