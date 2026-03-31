@@ -300,111 +300,20 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "PUBLISH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
-    - name: Initialize demo data
-      run: |
-        STEP_START=$(date +%s.%N)
-        SA_PASSWORD="Passw0rd123!"
-
-        # SQL helper (runs queries via docker exec on the SQL container)
-        SQL_ID=$(cd bc-linux && docker compose ps -q sql 2>/dev/null | head -1)
-        run_sql() {
-          docker exec -e "_QB=$(echo "$1" | base64 -w0)" "$SQL_ID" bash -c \
-            'echo "$_QB" | base64 -d | /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "'"$SA_PASSWORD"'" -C -No -i /dev/stdin' 2>&1
-        }
-
-        # Get company name
-        COMPANY=$(run_sql "USE [CRONUS]; SELECT TOP 1 RTRIM([Name]) FROM [Company] WHERE [Name] != 'My Company' ORDER BY [Name]" \
-          | grep -v "^-" | grep -v "^Changed" | grep -v "^$" | grep -v "^(" | head -1 | sed 's/ *$//')
-        [ -z "$COMPANY" ] && COMPANY="CRONUS International Ltd."
-        echo "Company: $COMPANY"
-        echo "COMPANY=$COMPANY" >> $GITHUB_ENV
-
-        # Initialize demo data by running init codeunits via SQL-triggered test suite
-        TABLE_PREFIX="$(echo "${COMPANY}" | sed 's/\.//g')_\$"
-        SUITE_TABLE="${TABLE_PREFIX}AL Test Suite\$23de40a6-dfe8-4f80-80db-d70f83ce8caf"
-        METHOD_TABLE="${TABLE_PREFIX}Test Method Line\$23de40a6-dfe8-4f80-80db-d70f83ce8caf"
-
-        for CU_ID in 2 5193 5691; do
-          echo "  Running CU $CU_ID..."
-          run_sql "
-          USE [CRONUS];
-          DELETE FROM [$METHOD_TABLE] WHERE [Test Suite] = N'INIT';
-          DELETE FROM [$SUITE_TABLE] WHERE [Name] = N'INIT';
-          INSERT INTO [$SUITE_TABLE] ([Name],[Description],[Last Run],[Run Type],[Test Runner Id],[Stability Run],
-            [CC Tracking Type],[CC Track All Sessions],[CC Exporter ID],[CC Coverage Map],
-            [\$systemId],[\$systemCreatedAt],[\$systemCreatedBy],[\$systemModifiedAt],[\$systemModifiedBy])
-          VALUES (N'INIT',N'','1753-01-01',0,130451,0,0,0,0,0,
-            NEWID(),GETUTCDATE(),'00000000-0000-0000-0000-000000000001',
-            GETUTCDATE(),'00000000-0000-0000-0000-000000000001');
-          SET IDENTITY_INSERT [$METHOD_TABLE] ON;
-          INSERT INTO [$METHOD_TABLE] ([Test Suite],[Line No_],[Test Codeunit],[Name],[Function],[Run],[Result],[Line Type],
-            [Start Time],[Finish Time],[Level],[Error Message Preview],[Error Code],
-            [Error Message],[Error Call Stack],[Skip Logging Results],[Data Input Group Code],[Data Input],
-            [\$systemId],[\$systemCreatedAt],[\$systemCreatedBy],[\$systemModifiedAt],[\$systemModifiedBy])
-          VALUES (N'INIT',10000,$CU_ID,N'Init',N'',1,0,0,'1753-01-01','1753-01-01',0,N'',N'',0x,0x,0,N'',0x,
-            NEWID(),GETUTCDATE(),'00000000-0000-0000-0000-000000000001',
-            GETUTCDATE(),'00000000-0000-0000-0000-000000000001');
-          SET IDENTITY_INSERT [$METHOD_TABLE] OFF;
-          " > /dev/null 2>&1
-          # Trigger execution via WebSocket
-          timeout 120 dotnet run --project bc-linux/tools/TestRunner -c Release -- \
-            --host localhost:7085 --company "$COMPANY" --timeout 2 2>&1 | tail -3 || true
-          sleep 2
-        done
-        # Clean up init suite
-        run_sql "USE [CRONUS]; DELETE FROM [$METHOD_TABLE] WHERE [Test Suite] = N'INIT'; DELETE FROM [$SUITE_TABLE] WHERE [Name] = N'INIT';" > /dev/null 2>&1
-
-        STEP_END=$(date +%s.%N)
-        echo "DEMODATA_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
-
     - name: Run System Application Tests
       run: |
         STEP_START=$(date +%s.%N)
-        SA_PASSWORD="Passw0rd123!"
-
-        # Diagnostic: check AL Test Suite tables exist and have data
-        SQL_ID=$(cd bc-linux && docker compose ps -q sql 2>/dev/null | head -1)
-        diag_sql() {
-          docker exec -e "_QB=$(echo "$1" | base64 -w0)" "$SQL_ID" bash -c \
-            'echo "$_QB" | base64 -d | /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "'"$SA_PASSWORD"'" -C -No -i /dev/stdin' 2>&1
-        }
-        echo "=== DB Diagnostics ==="
-        echo "All AL Test Suite tables (look for multiple GUIDs = table versioning):"
-        diag_sql "USE [CRONUS]; SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME LIKE '%AL Test Suite%' OR TABLE_NAME LIKE '%Test Method Line%'" | grep -v "^-" | grep -v "^$" | grep -v "^(" | head -20
-        echo "=== End Diagnostics ==="
 
         # Find the compiled test .app
         TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" ! -name "*Library*" | head -1)
         echo "Test app: $TESTAPP"
 
-        # Use bc-linux run-tests.sh (finds docker compose via REPO_DIR = script/../)
+        # Use bc-linux run-tests.sh (REST API approach — no SQL/WebSocket needed)
         chmod +x bc-linux/scripts/run-tests.sh
 
         bc-linux/scripts/run-tests.sh \
           --app "$TESTAPP" \
-          --company "$COMPANY" \
-          --timeout 60 \
-          --sql-password "$SA_PASSWORD" || true
-
-        # Read counts from SQL for metrics
-        SQL_ID=$(cd bc-linux && docker compose ps -q sql 2>/dev/null | head -1)
-        run_sql() {
-          docker exec -e "_QB=$(echo "$1" | base64 -w0)" "$SQL_ID" bash -c \
-            'echo "$_QB" | base64 -d | /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "'"$SA_PASSWORD"'" -C -No -i /dev/stdin' 2>&1
-        }
-        TABLE_PREFIX="$(echo "${COMPANY}" | sed 's/\.//g')_\$"
-        METHOD_TABLE="${TABLE_PREFIX}Test Method Line\$23de40a6-dfe8-4f80-80db-d70f83ce8caf"
-
-        sql_count() { run_sql "$1" | grep -oP '^\s+\d+' | tr -d ' ' | tail -1; }
-        TEST_TOTAL=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0")
-        TEST_PASSED=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0 AND [Result] IN (2,3)")
-        TEST_FAILED=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0 AND [Result] = 1")
-        TEST_SKIPPED=$(sql_count "USE [CRONUS]; SELECT COUNT(*) FROM [$METHOD_TABLE] WHERE [Test Suite] = N'DEFAULT' AND [Line Type] = 0 AND [Result] = 0")
-
-        echo "TEST_TOTAL=${TEST_TOTAL:-0}" >> $GITHUB_ENV
-        echo "TEST_PASSED=${TEST_PASSED:-0}" >> $GITHUB_ENV
-        echo "TEST_FAILED=${TEST_FAILED:-0}" >> $GITHUB_ENV
-        echo "TEST_SKIPPED=${TEST_SKIPPED:-0}" >> $GITHUB_ENV
+          --timeout 120 || true
 
         STEP_END=$(date +%s.%N)
         echo "TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
@@ -421,12 +330,5 @@ jobs:
         echo "Compile Test Library:   ${TESTLIB_COMPILE_DURATION:-n/a}s"
         echo "Compile System App Test:${TEST_COMPILE_DURATION:-n/a}s"
         echo "Publish extensions:     ${PUBLISH_DURATION:-n/a}s"
-        echo "Demo data init:         ${DEMODATA_DURATION:-n/a}s"
         echo "Run tests:              ${TEST_DURATION:-n/a}s"
         echo "Total:                  ${TOTAL}s"
-        echo ""
-        echo "=== Test Results ==="
-        echo "Codeunits total:    ${TEST_TOTAL:-n/a}"
-        echo "Codeunits passed:   ${TEST_PASSED:-n/a}"
-        echo "Codeunits failed:   ${TEST_FAILED:-n/a}"
-        echo "Codeunits skipped:  ${TEST_SKIPPED:-n/a}"
