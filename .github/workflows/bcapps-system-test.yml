@@ -94,8 +94,9 @@ jobs:
         cd bc-linux
 
         # Container downloads artifacts itself using BC_VERSION/BC_COUNTRY/BC_TYPE
-        # No BC_CLEAR_ALL_APPS — forcesync + version 27.6 handles publishing over existing apps
-        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\n" > .env
+        # BC_CLEAR_ALL_APPS: remove pre-installed AppSource apps that block System App publish
+        # BC_SKIP_APP_PUBLISH: workflow handles all extension publishing itself
+        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\nBC_SKIP_APP_PUBLISH=true\n" > .env
 
         docker compose up -d --build 2>&1 | tail -10
 
@@ -289,7 +290,21 @@ jobs:
         SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
         publish_app "$SYSAPP" "System Application"
 
-        # Test framework + TestRunner Extension already published by container entrypoint
+        # Test framework apps (BC_SKIP_APP_PUBLISH=true, so we publish them here)
+        echo "Publishing test framework apps..."
+        find bc-artifacts -name "*.app" -type f \( \
+            -name "Microsoft_Test Runner_*" -o \
+            -name "Microsoft_Library Assert_*" -o \
+            -name "Microsoft_Library Variable Storage_*" -o \
+            -name "Microsoft_Permissions Mock_*" -o \
+            -name "Microsoft_Any_*" \
+        \) 2>/dev/null | sort | while read -r app; do
+          NAME=$(basename "$app")
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
+            -u "$AUTH" -X POST \
+            -F "file=@$app;type=application/octet-stream" "$DEV" 2>/dev/null)
+          echo "  $NAME: HTTP $HTTP"
+        done
 
         # System Application Test Library + Test (compiled from BCApps source)
         TESTLIB=$(find . -maxdepth 1 -name "*Test*Library*.app" | head -1)
