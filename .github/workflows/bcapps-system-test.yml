@@ -17,7 +17,6 @@ env:
   BC_VERSION: ${{ inputs.bc_version || '27.5.46862.48004' }}
   AL_TOOLS_VERSION: '16.2.28.57946'
   BCAPPS_TAG: 'releases/27.5/StrictMode'
-  BC_ARTIFACT_BASE: 'https://bcartifacts-exdbf9fwegejdqak.b02.azurefd.net/sandbox'
 
 jobs:
   bcapps-test:
@@ -66,53 +65,15 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
-    - name: Download BC artifacts
-      run: |
-        STEP_START=$(date +%s.%N)
-        # Download artifacts ONCE on host — shared with container via bind mount
-        BC_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/w1"
-        PLATFORM_URL="${{ env.BC_ARTIFACT_BASE }}/${{ env.BC_VERSION }}/platform"
-        DEST="$(pwd)/bc-artifacts"
-        mkdir -p "$DEST/app" "$DEST/platform"
-
-        echo "Downloading app artifact..."
-        curl -sSL "$BC_URL" -o "$DEST/bc-app.zip"
-        unzip -qo "$DEST/bc-app.zip" -d "$DEST/app"
-        rm -f "$DEST/bc-app.zip"
-
-        echo "Downloading platform artifact..."
-        curl -sSL "$PLATFORM_URL" -o "$DEST/bc-platform.zip"
-        unzip -qo "$DEST/bc-platform.zip" -d "$DEST/platform"
-        rm -f "$DEST/bc-platform.zip"
-
-        echo "Artifacts: $(du -sh "$DEST" | cut -f1)"
-        echo "BC_ARTIFACTS_PATH=$DEST" >> $GITHUB_ENV
-        STEP_END=$(date +%s.%N)
-        echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
-
     - name: Start BC container
       run: |
         STEP_START=$(date +%s.%N)
         cd bc-linux
 
-        # BC_ARTIFACT_URL=skip tells entrypoint to use externally provided artifacts
         # BC_CLEAR_ALL_APPS=true removes all pre-installed AppSource apps so we can
         # publish our custom System Application without dependency conflicts (HTTP 422)
-        printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\n" > .env
-
-        # Override volumes to bind-mount host artifacts (avoids 6min duplicate download)
-        cat > docker-compose.override.yml <<EOF
-        services:
-          sql:
-            volumes:
-              - $BC_ARTIFACTS_PATH:/bc/artifacts:ro
-          bc:
-            volumes:
-              - $BC_ARTIFACTS_PATH:/bc/artifacts
-              - bc-service:/bc/service
-        EOF
-        # Fix indentation (heredoc preserves workflow indentation)
-        sed -i 's/^        //' docker-compose.override.yml
+        # Container downloads artifacts itself using BC_VERSION/BC_COUNTRY/BC_TYPE
+        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\n" > .env
 
         docker compose up -d --build 2>&1 | tail -10
 
@@ -147,7 +108,12 @@ jobs:
 
         # Instance name is "BC" in bc-linux
         echo "INSTANCE=BC" >> $GITHUB_ENV
+
+        # Extract artifacts from container volume for the compile step
+        BC_CONTAINER=$(docker compose ps -q bc)
         cd ..
+        docker cp "$BC_CONTAINER:/bc/artifacts" bc-artifacts
+        echo "Artifacts extracted: $(du -sh bc-artifacts | cut -f1)"
         STEP_END=$(date +%s.%N)
         echo "CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
@@ -429,7 +395,6 @@ jobs:
         TOTAL=$(python3 -c "print(f'{$(date +%s.%N) - ${{ env.START_EPOCH }}:.3f}')")
         echo "=== Pipeline Timing ==="
         echo "Setup (clone repos):    ${SETUP_DURATION:-n/a}s"
-        echo "Download artifacts:     ${DOWNLOAD_DURATION:-n/a}s"
         echo "BC container start:     ${CONTAINER_DURATION:-n/a}s"
         echo "Prepare symbols:        ${PREPARE_DURATION:-n/a}s"
         echo "Compile System App:     ${SYSAPP_COMPILE_DURATION:-n/a}s"
