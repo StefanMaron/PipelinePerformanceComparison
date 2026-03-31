@@ -73,7 +73,7 @@ jobs:
         # BC_CLEAR_ALL_APPS=true removes all pre-installed AppSource apps so we can
         # publish our custom System Application without dependency conflicts (HTTP 422)
         # Container downloads artifacts itself using BC_VERSION/BC_COUNTRY/BC_TYPE
-        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\n" > .env
+        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\nBC_SKIP_APP_PUBLISH=true\n" > .env
 
         docker compose up -d --build 2>&1 | tail -10
 
@@ -267,9 +267,26 @@ jobs:
         SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
         publish_app "$SYSAPP" "System Application"
 
-        # Test framework apps are already published by the bc-linux container entrypoint
-        # (Test Runner, Library Assert, Library Variable Storage, Any)
-        echo "  Test framework: published by container entrypoint"
+        # Test framework apps (BC_SKIP_APP_PUBLISH=true means entrypoint didn't publish these)
+        echo "Publishing test framework apps..."
+        DEV_FORCE="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=forcesync"
+        find bc-artifacts -name "*.app" -type f \( \
+            -name "Microsoft_Test Runner_*" -o \
+            -name "Microsoft_Library Assert_*" -o \
+            -name "Microsoft_Library Variable Storage_*" -o \
+            -name "Microsoft_Permissions Mock_*" -o \
+            -name "Microsoft_Any_*" \
+        \) 2>/dev/null | sort | while read -r app; do
+          NAME=$(basename "$app")
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
+            -u "$AUTH" -X POST \
+            -F "file=@$app;type=application/octet-stream" "$DEV_FORCE" 2>/dev/null)
+          echo "  $NAME: HTTP $HTTP"
+        done
+
+        # Custom TestRunner extension (API for test execution)
+        TESTRUNNER_APP=$(find bc-linux -name "TestRunner.app" 2>/dev/null | head -1)
+        [ -n "$TESTRUNNER_APP" ] && publish_app "$TESTRUNNER_APP" "TestRunner Extension"
 
         # System Application Test Library + Test (compiled from BCApps source)
         TESTLIB=$(find . -maxdepth 1 -name "*Test*Library*.app" | head -1)
