@@ -96,8 +96,9 @@ jobs:
         cd bc-linux
 
         # BC_ARTIFACT_URL=skip tells entrypoint to use externally provided artifacts
-        # Don't use BC_CLEAR_ALL_APPS — it breaks AL Test Suite table visibility
-        printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\n" > .env
+        # BC_CLEAR_ALL_APPS=true removes all pre-installed AppSource apps so we can
+        # publish our custom System Application without dependency conflicts (HTTP 422)
+        printf "BC_ARTIFACT_URL=skip\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\n" > .env
 
         # Override volumes to bind-mount host artifacts (avoids 6min duplicate download)
         cat > docker-compose.override.yml <<EOF
@@ -291,6 +292,8 @@ jobs:
           echo "  $NAME: HTTP $HTTP"
           if [ "$HTTP" != "200" ]; then
             echo "$RESP" | head -1 | python3 -c "import json,sys; print(json.load(sys.stdin).get('Message','')[:500])" 2>/dev/null || true
+            echo "FATAL: Failed to publish $NAME — aborting (test execution would be doomed)"
+            exit 1
           fi
         }
 
