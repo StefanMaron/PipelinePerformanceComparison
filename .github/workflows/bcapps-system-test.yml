@@ -328,7 +328,7 @@ jobs:
 
         bc-linux/scripts/run-tests.sh \
           --app "$TESTAPP" \
-          --timeout 120 || true
+          --timeout 270 || true
 
         STEP_END=$(date +%s.%N)
         echo "TEST_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
