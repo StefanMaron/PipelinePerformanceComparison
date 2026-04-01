@@ -428,6 +428,34 @@ jobs:
         path: DisabledTests
       continue-on-error: true
 
+    - name: Wait for TestRunner API
+      run: |
+        # The committed image has extensions installed, but the restarted BC
+        # process needs time to compile and load them. Wait for the TestRunner
+        # API to be available before running tests.
+        echo "Waiting for TestRunner API..."
+        AUTH="admin:Admin123!"
+        COMPANY_ID=$(curl -sf --max-time 10 -u "$AUTH" \
+          "http://localhost:7052/BC/api/v2.0/companies" 2>/dev/null \
+          | python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['id'])" 2>/dev/null || echo "")
+        API_BASE="http://localhost:7052/BC/api/custom/automation/v1.0/companies(${COMPANY_ID})"
+
+        for i in $(seq 1 60); do
+          HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u "$AUTH" \
+            "${API_BASE}/codeunitRunRequests" 2>/dev/null || echo "000")
+          if [ "$HTTP" = "200" ]; then
+            echo "TestRunner API ready after $((i*5))s"
+            break
+          fi
+          [ $((i % 6)) -eq 0 ] && echo "  $((i*5))s: HTTP $HTTP"
+          sleep 5
+        done
+
+        if [ "$HTTP" != "200" ]; then
+          echo "ERROR: TestRunner API not available after 5 minutes"
+          exit 1
+        fi
+
     - name: Run test codeunits
       run: |
         STEP_START=$(date +%s.%N)
