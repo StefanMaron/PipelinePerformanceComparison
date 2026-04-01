@@ -338,10 +338,16 @@ jobs:
         TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" ! -name "*Library*" | head -1)
         echo "Test app: $TESTAPP"
 
+        # BCApps disabled tests directory (same tests Microsoft skips in their CI)
+        DISABLED_DIR="bcapps-temp/src/System Application/Test/DisabledTests"
+        DISABLED_FLAG=""
+        [ -d "$DISABLED_DIR" ] && DISABLED_FLAG="--disabled-tests $DISABLED_DIR"
+
         chmod +x bc-linux/scripts/run-tests.sh
         bc-linux/scripts/run-tests.sh \
           --app "$TESTAPP" \
           --timeout 120 \
+          $DISABLED_FLAG \
           || true
 
         STEP_END=$(date +%s.%N)
