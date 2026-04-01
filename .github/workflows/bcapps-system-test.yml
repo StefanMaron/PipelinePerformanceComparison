@@ -318,6 +318,19 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "PUBLISH_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
+    - name: Initialize demo data
+      run: |
+        STEP_START=$(date +%s.%N)
+        # Run initialization codeunits to set up CRONUS demo data.
+        # Many System App tests expect sample records (customers, items, etc.)
+        # CU 2 = Company-Initialize, CU 5193/5691 = Contoso Demo Data
+        for CU_ID in 2 5193 5691; do
+          echo -n "  Initializing CU $CU_ID... "
+          bc-linux/scripts/run-tests.sh --codeunit-range "$CU_ID" --timeout 5 > /dev/null 2>&1 && echo "OK" || echo "WARN"
+        done
+        STEP_END=$(date +%s.%N)
+        echo "DEMODATA_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
     - name: Run System Application Tests
       run: |
         STEP_START=$(date +%s.%N)
@@ -346,5 +359,6 @@ jobs:
         echo "Compile Test Library:   ${TESTLIB_COMPILE_DURATION:-n/a}s"
         echo "Compile System App Test:${TEST_COMPILE_DURATION:-n/a}s"
         echo "Publish extensions:     ${PUBLISH_DURATION:-n/a}s"
+        echo "Initialize demo data:   ${DEMODATA_DURATION:-n/a}s"
         echo "Run tests:              ${TEST_DURATION:-n/a}s"
         echo "Total:                  ${TOTAL}s"
