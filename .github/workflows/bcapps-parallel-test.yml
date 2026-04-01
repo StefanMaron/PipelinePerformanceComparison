@@ -256,10 +256,13 @@ jobs:
         BC_IMG="${PREFIX}-bc:run-${{ github.run_id }}"
         SQL_IMG="${PREFIX}-sql:run-${{ github.run_id }}"
 
-        echo "Committing BC container..."
-        docker commit "$BC_CONTAINER" "$BC_IMG"
-        echo "Committing SQL container..."
-        docker commit "$SQL_CONTAINER" "$SQL_IMG"
+        # Docker commit excludes volumes (/bc/artifacts, /bc/service).
+        # Export the full container filesystem (includes volume content)
+        # and import as a flat image.
+        echo "Exporting BC container (includes volume data)..."
+        docker export "$BC_CONTAINER" | docker import - "$BC_IMG"
+        echo "Exporting SQL container..."
+        docker export "$SQL_CONTAINER" | docker import - "$SQL_IMG"
 
         echo "BC image: $(docker images "$BC_IMG" --format '{{.Size}}')"
         echo "SQL image: $(docker images "$SQL_IMG" --format '{{.Size}}')"
@@ -375,7 +378,8 @@ jobs:
         docker run -d --name sql --network bc-net \
           -e ACCEPT_EULA=Y \
           -e "MSSQL_SA_PASSWORD=Passw0rd123!" \
-          ${{ needs.prepare.outputs.sql-image }}
+          ${{ needs.prepare.outputs.sql-image }} \
+          /opt/mssql/bin/sqlservr
 
         echo "Waiting for SQL..."
         for i in $(seq 1 20); do
@@ -393,8 +397,12 @@ jobs:
           -e SA_PASSWORD="Passw0rd123!" \
           -e BC_CLEAR_ALL_APPS=false \
           -e BC_SKIP_APP_PUBLISH=true \
+          -e DOTNET_STARTUP_HOOKS=/bc/hook/StartupHook.dll \
+          -e LANG=en_US.UTF-8 \
+          -e LC_ALL=en_US.UTF-8 \
           -p 7048:7048 -p 7049:7049 -p 7052:7052 -p 7085:7085 \
-          ${{ needs.prepare.outputs.bc-image }}
+          ${{ needs.prepare.outputs.bc-image }} \
+          /bc/scripts/entrypoint.sh
 
         echo "Waiting for BC..."
         for i in $(seq 1 120); do
