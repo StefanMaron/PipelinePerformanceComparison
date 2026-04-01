@@ -322,58 +322,13 @@ jobs:
       run: |
         STEP_START=$(date +%s.%N)
 
-        # Find the compiled test .app and extract codeunit IDs
         TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" ! -name "*Library*" | head -1)
         echo "Test app: $TESTAPP"
 
-        # Extract test codeunit IDs from the .app file
-        CODEUNIT_IDS=$(python3 -c "
-        import zipfile, io, json, re
-        with open('$TESTAPP', 'rb') as f:
-            data = f.read()
-        idx = data.find(b'PK\x03\x04')
-        z = zipfile.ZipFile(io.BytesIO(data[idx:]))
-        ids = set()
-        for name in z.namelist():
-            if name.endswith('.al'):
-                content = z.read(name).decode('utf-8', errors='replace')
-                for m in re.finditer(r'codeunit\s+(\d+)\s+', content):
-                    cid = int(m.group(1))
-                    # Check if it's a test codeunit (has Subtype = Test)
-                    if 'Subtype = Test' in content or 'SubType = Test' in content:
-                        ids.add(cid)
-        # Also try SymbolReference.json
-        for name in z.namelist():
-            if 'SymbolReference' in name:
-                try:
-                    sr = json.loads(z.read(name))
-                    for cu in sr.get('Codeunits', []):
-                        if cu.get('Properties', {}).get('SubType') == '10':  # Test = 10
-                            ids.add(cu['Id'])
-                except: pass
-        # Take first 5 for smoke test
-        sorted_ids = sorted(ids)[:5]
-        print(','.join(str(i) for i in sorted_ids))
-        " 2>/dev/null)
-
-        if [ -z "$CODEUNIT_IDS" ]; then
-          echo "WARNING: Could not extract codeunit IDs, using fallback range"
-          CODEUNIT_IDS="132439,132440,132441,132442,132443"
-        fi
-        echo "Test codeunits (first 5): $CODEUNIT_IDS"
-
-        # Use WebSocket runner: OData for suite setup, WebSocket for execution
-        # (WebSocket creates a proper client session with serviceConnection,
-        # required for TestPage support)
-        cd bc-linux
-        dotnet run --project tools/TestRunner -- \
-          --host localhost:7085 \
-          --odata-host localhost:7052 \
-          --codeunit-filter "$CODEUNIT_IDS" \
-          --suite DEFAULT \
-          --timeout 30 \
-          --codeunit-timeout 10 \
-          --max-iterations 50 \
+        chmod +x bc-linux/scripts/run-tests.sh
+        bc-linux/scripts/run-tests.sh \
+          --app "$TESTAPP" \
+          --timeout 120 \
           || true
 
         STEP_END=$(date +%s.%N)
