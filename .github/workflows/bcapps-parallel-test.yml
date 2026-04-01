@@ -256,13 +256,44 @@ jobs:
         BC_IMG="${PREFIX}-bc:run-${{ github.run_id }}"
         SQL_IMG="${PREFIX}-sql:run-${{ github.run_id }}"
 
-        # Docker commit excludes volumes (/bc/artifacts, /bc/service).
-        # Export the full container filesystem (includes volume content)
-        # and import as a flat image.
-        echo "Exporting BC container (includes volume data)..."
-        docker export "$BC_CONTAINER" | docker import - "$BC_IMG"
-        echo "Exporting SQL container..."
-        docker export "$SQL_CONTAINER" | docker import - "$SQL_IMG"
+        # Docker commit/export excludes volume mount points.
+        # Copy volume data into the container filesystem first,
+        # then commit the container (which now includes the data).
+        echo "Baking volume data into container filesystem..."
+
+        # BC: copy artifacts and service tier into non-volume paths
+        docker exec "$BC_CONTAINER" bash -c "
+          mkdir -p /bc/_artifacts /bc/_service
+          cp -a /bc/artifacts/. /bc/_artifacts/
+          cp -a /bc/service/. /bc/_service/
+        "
+        # Commit BC with volume data at temp paths
+        docker commit "$BC_CONTAINER" "${BC_IMG}-staged"
+
+        # Build final image that moves temp paths to the real locations
+        echo 'FROM ${BC_IMG}-staged
+RUN rm -rf /bc/artifacts /bc/service && \
+    mv /bc/_artifacts /bc/artifacts && \
+    mv /bc/_service /bc/service
+ENV DOTNET_STARTUP_HOOKS=/bc/hook/StartupHook.dll
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+ENTRYPOINT ["/bc/scripts/entrypoint.sh"]
+' | docker build -t "$BC_IMG" -f - .
+
+        echo "BC image: $(docker images "$BC_IMG" --format '{{.Size}}')"
+        docker rmi "${BC_IMG}-staged" 2>/dev/null || true
+
+        # SQL: same approach
+        docker exec "$SQL_CONTAINER" bash -c "mkdir -p /var/opt/mssql/_data && cp -a /var/opt/mssql/data/. /var/opt/mssql/_data/"
+        docker commit "$SQL_CONTAINER" "${SQL_IMG}-staged"
+        echo "FROM ${SQL_IMG}-staged
+RUN rm -rf /var/opt/mssql/data && mv /var/opt/mssql/_data /var/opt/mssql/data
+ENTRYPOINT [\"/opt/mssql/bin/sqlservr\"]
+" | docker build -t "$SQL_IMG" -f - .
+
+        echo "SQL image: $(docker images "$SQL_IMG" --format '{{.Size}}')"
+        docker rmi "${SQL_IMG}-staged" 2>/dev/null || true
 
         echo "BC image: $(docker images "$BC_IMG" --format '{{.Size}}')"
         echo "SQL image: $(docker images "$SQL_IMG" --format '{{.Size}}')"
@@ -378,8 +409,7 @@ jobs:
         docker run -d --name sql --network bc-net \
           -e ACCEPT_EULA=Y \
           -e "MSSQL_SA_PASSWORD=Passw0rd123!" \
-          ${{ needs.prepare.outputs.sql-image }} \
-          /opt/mssql/bin/sqlservr
+          ${{ needs.prepare.outputs.sql-image }}
 
         echo "Waiting for SQL..."
         for i in $(seq 1 20); do
@@ -397,12 +427,8 @@ jobs:
           -e SA_PASSWORD="Passw0rd123!" \
           -e BC_CLEAR_ALL_APPS=false \
           -e BC_SKIP_APP_PUBLISH=true \
-          -e DOTNET_STARTUP_HOOKS=/bc/hook/StartupHook.dll \
-          -e LANG=en_US.UTF-8 \
-          -e LC_ALL=en_US.UTF-8 \
           -p 7048:7048 -p 7049:7049 -p 7052:7052 -p 7085:7085 \
-          ${{ needs.prepare.outputs.bc-image }} \
-          /bc/scripts/entrypoint.sh
+          ${{ needs.prepare.outputs.bc-image }}
 
         echo "Waiting for BC..."
         for i in $(seq 1 120); do
