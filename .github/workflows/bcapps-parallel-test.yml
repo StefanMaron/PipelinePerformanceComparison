@@ -20,6 +20,10 @@ env:
   BCAPPS_TAG: 'releases/27.5/StrictMode'
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/bc-parallel  # note: lowercased in snapshot step
 
+permissions:
+  packages: write
+  contents: read
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -262,9 +266,12 @@ jobs:
 
         echo "Pushing to ghcr.io..."
         echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-        docker push "$BC_IMG" 2>&1 &
-        docker push "$SQL_IMG" 2>&1 &
-        wait
+        docker push "$BC_IMG" &
+        BC_PUSH_PID=$!
+        docker push "$SQL_IMG" &
+        SQL_PUSH_PID=$!
+        wait $BC_PUSH_PID || { echo "ERROR: BC push failed"; exit 1; }
+        wait $SQL_PUSH_PID || { echo "ERROR: SQL push failed"; exit 1; }
         echo "Push complete."
 
         echo "bc-image=$BC_IMG" >> "$GITHUB_OUTPUT"
