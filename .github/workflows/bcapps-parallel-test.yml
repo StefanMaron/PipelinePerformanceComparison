@@ -416,9 +416,14 @@ jobs:
           sleep 5
         done
 
+        # Show BC entrypoint log regardless of outcome (for debugging startup time)
+        echo "=== BC entrypoint log ==="
+        docker logs bc 2>&1 | grep -E "\[entrypoint\]|\[artifacts\]|Error|error" | head -40
+        echo "=== end log ==="
+
         if [ "$HTTP" != "200" ]; then
           echo "ERROR: BC not responding"
-          docker logs bc 2>&1 | tail -50
+          docker logs bc 2>&1 | tail -100
           exit 1
         fi
 
