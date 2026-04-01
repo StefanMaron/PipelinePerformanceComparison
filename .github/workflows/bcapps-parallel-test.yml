@@ -271,27 +271,27 @@ jobs:
         docker commit "$BC_CONTAINER" "${BC_IMG}-staged"
 
         # Build final image that moves temp paths to the real locations
-        echo 'FROM ${BC_IMG}-staged
-RUN rm -rf /bc/artifacts /bc/service && \
-    mv /bc/_artifacts /bc/artifacts && \
-    mv /bc/_service /bc/service
-ENV DOTNET_STARTUP_HOOKS=/bc/hook/StartupHook.dll
-ENV LANG=en_US.UTF-8
-ENV LC_ALL=en_US.UTF-8
-ENTRYPOINT ["/bc/scripts/entrypoint.sh"]
-' | docker build -t "$BC_IMG" -f - .
-
+        cat > /tmp/Dockerfile.bc <<DEOF
+        FROM ${BC_IMG}-staged
+        RUN rm -rf /bc/artifacts /bc/service && mv /bc/_artifacts /bc/artifacts && mv /bc/_service /bc/service
+        ENV DOTNET_STARTUP_HOOKS=/bc/hook/StartupHook.dll
+        ENV LANG=en_US.UTF-8
+        ENV LC_ALL=en_US.UTF-8
+        ENTRYPOINT ["/bc/scripts/entrypoint.sh"]
+        DEOF
+        docker build -t "$BC_IMG" -f /tmp/Dockerfile.bc .
         echo "BC image: $(docker images "$BC_IMG" --format '{{.Size}}')"
         docker rmi "${BC_IMG}-staged" 2>/dev/null || true
 
         # SQL: same approach
         docker exec "$SQL_CONTAINER" bash -c "mkdir -p /var/opt/mssql/_data && cp -a /var/opt/mssql/data/. /var/opt/mssql/_data/"
         docker commit "$SQL_CONTAINER" "${SQL_IMG}-staged"
-        echo "FROM ${SQL_IMG}-staged
-RUN rm -rf /var/opt/mssql/data && mv /var/opt/mssql/_data /var/opt/mssql/data
-ENTRYPOINT [\"/opt/mssql/bin/sqlservr\"]
-" | docker build -t "$SQL_IMG" -f - .
-
+        cat > /tmp/Dockerfile.sql <<DEOF
+        FROM ${SQL_IMG}-staged
+        RUN rm -rf /var/opt/mssql/data && mv /var/opt/mssql/_data /var/opt/mssql/data
+        ENTRYPOINT ["/opt/mssql/bin/sqlservr"]
+        DEOF
+        docker build -t "$SQL_IMG" -f /tmp/Dockerfile.sql .
         echo "SQL image: $(docker images "$SQL_IMG" --format '{{.Size}}')"
         docker rmi "${SQL_IMG}-staged" 2>/dev/null || true
 
