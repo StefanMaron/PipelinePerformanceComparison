@@ -18,7 +18,7 @@ env:
   BC_VERSION: ${{ inputs.bc_version || '27.5.46862.48004' }}
   AL_TOOLS_VERSION: '16.2.28.57946'
   BCAPPS_TAG: 'releases/27.5/StrictMode'
-  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/bc-parallel
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/bc-parallel  # note: lowercased in snapshot step
 
 jobs:
   prepare:
@@ -247,8 +247,10 @@ jobs:
       id: snapshot
       run: |
         STEP_START=$(date +%s.%N)
-        BC_IMG="${IMAGE_PREFIX}-bc:run-${{ github.run_id }}"
-        SQL_IMG="${IMAGE_PREFIX}-sql:run-${{ github.run_id }}"
+        # Docker requires lowercase image names
+        PREFIX=$(echo "${IMAGE_PREFIX}" | tr '[:upper:]' '[:lower:]')
+        BC_IMG="${PREFIX}-bc:run-${{ github.run_id }}"
+        SQL_IMG="${PREFIX}-sql:run-${{ github.run_id }}"
 
         echo "Committing BC container..."
         docker commit "$BC_CONTAINER" "$BC_IMG"
