@@ -13,24 +13,20 @@ on:
         required: false
         default: '0'
         type: string
-      description:
-        description: 'Run description (optional)'
-        required: false
-        type: string
 
 env:
   BC_VERSION: ${{ inputs.bc_version || '27.5.46862.48004' }}
   AL_TOOLS_VERSION: '16.2.28.57946'
   BCAPPS_TAG: 'releases/27.5/StrictMode'
-  REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/bc-parallel
 
 jobs:
   # ============================================================
-  # PREPARE: Compile, publish, checkpoint BC, commit SQL
+  # PREPARE: Docker-compose for BC setup, then CRIU checkpoint
+  # Reuses the proven bcapps-system-test pipeline, minus test exec
   # ============================================================
   prepare:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
       bc-checkpoint: ${{ steps.snapshot.outputs.bc-checkpoint }}
@@ -56,16 +52,6 @@ jobs:
           --version ${{ env.AL_TOOLS_VERSION }} || true
         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-    - name: Install podman and CRIU
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq podman
-        # CRIU is not in ubuntu-24.04 default repos — install from CRIU PPA
-        sudo add-apt-repository -y ppa:criu/ppa
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq criu
-        criu --version && podman --version
-
     - name: Clone BCApps and bc-linux
       run: |
         STEP_START=$(date +%s.%N)
@@ -74,92 +60,62 @@ jobs:
         BCAPPS_PID=$!
         git clone --depth 1 https://github.com/StefanMaron/MsDyn365Bc.On.Linux.git bc-linux
         wait $BCAPPS_PID
-        echo "System Application AL files: $(find bcapps-temp/src/System\ Application -name '*.al' 2>/dev/null | wc -l)"
         STEP_END=$(date +%s.%N)
         echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
     - name: Bump app versions to 27.6
       run: |
-        echo "Patching app.json versions from 27.5 → 27.6..."
         find bcapps-temp/src/System\ Application -name "app.json" | while read f; do
           python3 -c "
         import json, re
         with open('$f', 'r') as fh:
             data = json.loads(fh.read())
         if 'version' in data:
-            old = data['version']
-            data['version'] = re.sub(r'^27\.5\.', '27.6.', old)
+            data['version'] = re.sub(r'^27\.5\.', '27.6.', data['version'])
         with open('$f', 'w') as fh:
             json.dump(data, fh, indent=2)
             fh.write('\n')
         "
         done
 
-    - name: Build BC image with podman
+    - name: Start BC container (docker-compose)
       run: |
         STEP_START=$(date +%s.%N)
-        sudo podman build -t bc-runner:local -f bc-linux/src/Dockerfile bc-linux/ 2>&1 | tail -20
-        STEP_END=$(date +%s.%N)
-        echo "IMAGE_BUILD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+        cd bc-linux
+        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\nBC_SKIP_APP_PUBLISH=true\n" > .env
+        docker compose up -d --build 2>&1 | tail -10
 
-    - name: Start BC+SQL in podman pod
-      run: |
-        STEP_START=$(date +%s.%N)
-
-        # Create pod with shared network namespace
-        sudo podman pod create --name bc-pod \
-          -p 7048:7048 -p 7049:7049 -p 7052:7052 -p 7085:7085 -p 1433:1433
-
-        # Start SQL
-        sudo podman run -d --pod bc-pod --name sql-pm \
-          -e ACCEPT_EULA=Y \
-          -e "MSSQL_SA_PASSWORD=Passw0rd123!" \
-          -e MSSQL_MEMORY_LIMIT_MB=2048 \
-          mcr.microsoft.com/mssql/server:2022-latest
-
-        echo "Waiting for SQL..."
-        for i in $(seq 1 24); do
-          sudo podman exec sql-pm /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost -U sa -P "Passw0rd123!" -C -No -Q "SELECT 1" &>/dev/null \
-            && echo "SQL ready after $((i*5))s" && break
-          sleep 5
-        done
-
-        # Start BC (SQL at localhost via shared pod network)
-        sudo podman run -d --pod bc-pod --name bc-pm \
-          -e SQL_SERVER=localhost \
-          -e SA_PASSWORD="Passw0rd123!" \
-          -e BC_CLEAR_ALL_APPS=true \
-          -e BC_SKIP_APP_PUBLISH=true \
-          bc-runner:local
-
-        echo "Waiting for BC to be healthy (artifacts download + DB restore + service start)..."
+        echo "Waiting for BC to be healthy..."
         for i in $(seq 1 360); do
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
-            http://localhost:7048/BC/ODataV4/Company 2>/dev/null || echo "000")
-          if [ "$STATUS" = "200" ]; then
-            echo "BC healthy after $((i*5))s"
-            break
+          STATUS=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q bc) 2>/dev/null || echo "unknown")
+          case "$STATUS" in
+            healthy)
+              echo "BC healthy after $((i*5))s"
+              break
+              ;;
+            unhealthy)
+              echo "ERROR: BC container unhealthy"
+              docker compose logs bc 2>&1 | tail -50
+              exit 1
+              ;;
+          esac
+          if ! docker compose ps bc 2>/dev/null | grep -q "Up"; then
+            echo "ERROR: BC container died"
+            docker compose logs bc 2>&1 | tail -50
+            exit 1
           fi
-          if [ $((i % 12)) -eq 0 ]; then
-            LAST_LOG=$(sudo podman logs bc-pm 2>&1 | grep '\[entrypoint\]' | tail -1)
-            echo "  $((i*5))s: $LAST_LOG"
-          fi
+          [ $((i % 12)) -eq 0 ] && echo "  $((i*5))s: $(docker compose logs bc 2>&1 | grep '\[entrypoint\]' | tail -1)"
           sleep 5
         done
-
-        if [ "$STATUS" != "200" ]; then
-          echo "ERROR: BC did not become healthy within 30 minutes"
-          sudo podman logs bc-pm 2>&1 | tail -100
-          exit 1
-        fi
 
         echo "INSTANCE=BC" >> $GITHUB_ENV
-
-        # Extract artifacts from BC container for compile step
-        sudo podman cp bc-pm:/bc/artifacts bc-artifacts
+        BC_CONTAINER=$(docker compose ps -q bc)
+        echo "BC_CONTAINER=$BC_CONTAINER" >> $GITHUB_ENV
+        SQL_CONTAINER=$(docker compose ps -q sql)
+        echo "SQL_CONTAINER=$SQL_CONTAINER" >> $GITHUB_ENV
+        cd ..
+        docker cp "$BC_CONTAINER:/bc/artifacts" bc-artifacts
         echo "Artifacts extracted: $(du -sh bc-artifacts | cut -f1)"
-
         STEP_END=$(date +%s.%N)
         echo "CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
@@ -173,17 +129,13 @@ jobs:
         [ -n "$SYSTEM_APP" ] && cp "$SYSTEM_APP" .alpackages/System.app
         find bc-artifacts/platform -path "*testframework*" -name "*.app" -exec cp {} .alpackages/ \; 2>/dev/null
         find bc-artifacts/platform -path "*/Test/*.app" -exec cp {} .alpackages/ \; 2>/dev/null
-        echo "Symbols: $(ls .alpackages/*.app 2>/dev/null | wc -l) .app files"
 
         find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp {} mock-assemblies/ \; 2>/dev/null
 
         SVC_DIR=$(find bc-artifacts/platform/ServiceTier -name "Microsoft.Dynamics.Nav.Server.dll" -printf "%h\n" 2>/dev/null | head -1)
         if [ -n "$SVC_DIR" ]; then
           find "$SVC_DIR" -name "*.dll" | while read f; do
-            case "$(basename "$f")" in
-              System.*) ;;
-              *) cp -n "$f" service-dlls/ 2>/dev/null ;;
-            esac
+            case "$(basename "$f")" in System.*) ;; *) cp -n "$f" service-dlls/ 2>/dev/null ;; esac
           done
           for dll in System.Drawing.Common.dll System.IdentityModel.Tokens.Jwt.dll System.Private.ServiceModel.dll; do
             find "$SVC_DIR" -name "$dll" 2>/dev/null | head -1 | xargs -I{} cp {} service-dlls/ 2>/dev/null
@@ -194,7 +146,6 @@ jobs:
           find bc-artifacts/platform -path "*Mock Assemblies*" -name "*.dll" -exec cp -n {} service-dlls/ \; 2>/dev/null
         fi
 
-        echo "Building DrawingStub..."
         dotnet build bc-linux/src/stubs/DrawingStub -c Release 2>&1 | tail -3
         DRAWING_STUB=$(find bc-linux/src/stubs/DrawingStub -path "*/Release/*/System.Drawing.Common.dll" 2>/dev/null | head -1)
         [ -n "$DRAWING_STUB" ] && cp "$DRAWING_STUB" service-dlls/System.Drawing.Common.dll
@@ -220,23 +171,19 @@ jobs:
         DOTNET_ReadyToRun: '0'
         COMPlus_ReadyToRun: '0'
       run: |
-        STEP_START=$(date +%s.%N)
         AL compile \
           "/project:bcapps-temp/src/System Application/App" \
           "/packagecachepath:$(pwd)/.alpackages" \
           "/assemblyProbingPaths:$PROBING_PATHS" \
-          || { echo "ERROR: System Application compilation failed"; exit 1; }
+          || { echo "ERROR: compilation failed"; exit 1; }
         find "bcapps-temp/src/System Application/App" -maxdepth 1 -name "*.app" -exec cp {} .alpackages/ \;
         find "bcapps-temp/src/System Application/App" -maxdepth 1 -name "*.app" -exec cp {} . \;
-        STEP_END=$(date +%s.%N)
-        echo "SYSAPP_COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
     - name: Compile System Application Test Library
       env:
         DOTNET_ReadyToRun: '0'
         COMPlus_ReadyToRun: '0'
       run: |
-        STEP_START=$(date +%s.%N)
         AL compile \
           "/project:bcapps-temp/src/System Application/Test Library" \
           "/packagecachepath:$(pwd)/.alpackages" \
@@ -244,23 +191,18 @@ jobs:
           || echo "WARNING: Test Library compilation failed"
         find "bcapps-temp/src/System Application/Test Library" -maxdepth 1 -name "*.app" -exec cp {} .alpackages/ \; 2>/dev/null
         find "bcapps-temp/src/System Application/Test Library" -maxdepth 1 -name "*.app" -exec cp {} . \; 2>/dev/null
-        STEP_END=$(date +%s.%N)
-        echo "TESTLIB_COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
     - name: Compile System Application Test
       env:
         DOTNET_ReadyToRun: '0'
         COMPlus_ReadyToRun: '0'
       run: |
-        STEP_START=$(date +%s.%N)
         AL compile \
           "/project:bcapps-temp/src/System Application/Test" \
           "/packagecachepath:$(pwd)/.alpackages" \
           "/assemblyProbingPaths:$PROBING_PATHS" \
-          || { echo "ERROR: System Application Test compilation failed"; exit 1; }
+          || { echo "ERROR: compilation failed"; exit 1; }
         find "bcapps-temp/src/System Application/Test" -maxdepth 1 -name "*.app" -exec cp {} . \;
-        STEP_END=$(date +%s.%N)
-        echo "TEST_COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
     - name: Publish extensions to BC
       run: |
@@ -270,21 +212,16 @@ jobs:
 
         publish_app() {
           local FILE="$1" NAME="$2"
-          RESP=$(curl -s -w "\n%{http_code}" --max-time 180 \
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 180 \
             -u "$AUTH" -X POST \
             -F "file=@$FILE;type=application/octet-stream" "$DEV")
-          HTTP=$(echo "$RESP" | tail -1)
           echo "  $NAME: HTTP $HTTP"
-          if [ "$HTTP" != "200" ]; then
-            echo "FATAL: Failed to publish $NAME"
-            exit 1
-          fi
+          [ "$HTTP" != "200" ] && echo "FATAL: Failed to publish $NAME" && exit 1
         }
 
         SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
         publish_app "$SYSAPP" "System Application"
 
-        echo "Publishing test framework apps..."
         find bc-artifacts -name "*.app" -type f \( \
             -name "Microsoft_Test Runner_*" -o \
             -name "Microsoft_Library Assert_*" -o \
@@ -292,11 +229,8 @@ jobs:
             -name "Microsoft_Permissions Mock_*" -o \
             -name "Microsoft_Any_*" \
         \) 2>/dev/null | sort | while read -r app; do
-          NAME=$(basename "$app")
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
-            -u "$AUTH" -X POST \
-            -F "file=@$app;type=application/octet-stream" "$DEV" 2>/dev/null)
-          echo "  $NAME: HTTP $HTTP"
+          curl -s -o /dev/null -w "  $(basename "$app"): HTTP %{http_code}\n" --max-time 120 \
+            -u "$AUTH" -X POST -F "file=@$app;type=application/octet-stream" "$DEV" 2>/dev/null
         done
 
         publish_app "bc-linux/extensions/TestRunnerExtension/TestRunnerExtension.app" "TestRunnerExtension"
@@ -311,45 +245,88 @@ jobs:
 
     - name: Initialize demo data
       run: |
-        STEP_START=$(date +%s.%N)
         chmod +x bc-linux/scripts/run-tests.sh
         for CU_ID in 2 5193 5691; do
           echo -n "  Initializing CU $CU_ID... "
           bc-linux/scripts/run-tests.sh --codeunit-range "$CU_ID" --timeout 5 > /dev/null 2>&1 && echo "OK" || echo "WARN"
         done
-        STEP_END=$(date +%s.%N)
-        echo "DEMODATA_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
-    - name: Checkpoint BC and commit SQL
+    - name: Install podman and CRIU
+      run: |
+        sudo add-apt-repository -y ppa:criu/ppa
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq podman criu
+        criu --version && podman --version
+
+    - name: CRIU checkpoint BC + commit SQL
       id: snapshot
       run: |
         STEP_START=$(date +%s.%N)
         BC_IMG="${IMAGE_PREFIX}-bc:run-${{ github.run_id }}"
         SQL_IMG="${IMAGE_PREFIX}-sql:run-${{ github.run_id }}"
 
-        # Checkpoint BC container (CRIU — freezes running .NET process)
-        echo "Checkpointing BC..."
-        sudo podman container checkpoint bc-pm \
-          --create-image="$BC_IMG" \
-          --tcp-established --file-locks \
-          --print-stats 2>&1
-        echo "BC checkpoint complete."
+        # Export running Docker containers into podman
+        echo "Transferring containers from Docker to Podman..."
+        docker export "$BC_CONTAINER" | sudo podman import - bc-running:export
+        docker export "$SQL_CONTAINER" | sudo podman import - sql-running:export
 
-        # Commit SQL container (CRIU doesn't work with SQL — fsnotify issue)
+        # Commit SQL (docker commit is fine, CRIU doesn't work with SQL)
         echo "Committing SQL..."
-        sudo podman commit sql-pm "$SQL_IMG" 2>&1
-        echo "SQL committed."
+        docker commit "$SQL_CONTAINER" "$SQL_IMG" 2>&1
 
-        echo ""
-        sudo podman images | grep -E "bc-parallel"
+        # For CRIU checkpoint, we need BC running under podman.
+        # Stop Docker BC, start it under podman with the exported filesystem.
+        echo "Stopping Docker BC..."
+        docker stop "$BC_CONTAINER"
+
+        # Get the SQL container's IP so podman BC can reach it
+        SQL_IP=$(docker inspect "$SQL_CONTAINER" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+        echo "SQL at: $SQL_IP"
+
+        # Start BC under podman using the exported filesystem
+        # We need to create a proper image with the right entrypoint
+        echo "Starting BC under podman..."
+        sudo podman run -d --name bc-criu \
+          --network=host \
+          -e SQL_SERVER="$SQL_IP" \
+          -e SA_PASSWORD="Passw0rd123!" \
+          -e BC_SKIP_APP_PUBLISH=true \
+          bc-running:export \
+          /bc/scripts/entrypoint.sh
+
+        echo "Waiting for BC under podman..."
+        for i in $(seq 1 60); do
+          HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
+            http://localhost:7048/BC/ODataV4/Company 2>/dev/null || echo "000")
+          [ "$HTTP" = "200" ] && echo "BC healthy under podman after $((i*5))s" && break
+          sleep 5
+        done
+
+        if [ "$HTTP" != "200" ]; then
+          echo "ERROR: BC didn't start under podman. Using docker commit fallback."
+          docker start "$BC_CONTAINER"
+          docker commit "$BC_CONTAINER" "$BC_IMG"
+          echo "method=docker" >> "$GITHUB_OUTPUT"
+        else
+          # CRIU checkpoint!
+          echo "Checkpointing BC with CRIU..."
+          sudo mkdir -p /etc/criu
+          echo -e "tcp-established\nfile-locks" | sudo tee /etc/criu/runc.conf
+          sudo podman container checkpoint bc-criu \
+            --create-image="$BC_IMG" \
+            --tcp-established --file-locks \
+            --print-stats 2>&1
+          echo "method=criu" >> "$GITHUB_OUTPUT"
+        fi
 
         # Push to ghcr.io
-        echo ""
         echo "Pushing images to ghcr.io..."
-        echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login ghcr.io -u ${{ github.actor }} --password-stdin
-        sudo podman push "$BC_IMG" 2>&1
-        sudo podman push "$SQL_IMG" 2>&1
-        echo "Push complete."
+        echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        docker push "$SQL_IMG" 2>&1
+
+        # For BC: push from podman if CRIU, from docker if fallback
+        echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login ghcr.io -u ${{ github.actor }} --password-stdin 2>/dev/null
+        sudo podman push "$BC_IMG" 2>&1 || docker push "$BC_IMG" 2>&1
 
         echo "bc-checkpoint=$BC_IMG" >> "$GITHUB_OUTPUT"
         echo "sql-image=$SQL_IMG" >> "$GITHUB_OUTPUT"
@@ -361,8 +338,6 @@ jobs:
       id: split
       run: |
         TESTAPP=$(find . -maxdepth 1 -name "*System*Application*Test*.app" ! -name "*Library*" | head -1)
-        echo "Test app: $TESTAPP"
-
         CODEUNIT_IDS=$(unzip -p "$TESTAPP" SymbolReference.json 2>/dev/null | python3 -c "
         import sys, json
         raw = sys.stdin.read()
@@ -381,27 +356,20 @@ jobs:
         echo "Found $(echo "$CODEUNIT_IDS" | tr ',' '\n' | wc -l) test codeunits"
 
         RUNNERS="${{ inputs.runners || '0' }}"
-
         python3 -c "
-        import json, sys, math
-
+        import json, math
         ids = '$CODEUNIT_IDS'.split(',')
         n = int('$RUNNERS')
-
         if n == 0:
-            # One runner per codeunit
             matrix = {'include': [{'batch': i, 'codeunit_ids': cid} for i, cid in enumerate(ids)]}
         else:
-            # Split into n batches
             batch_size = math.ceil(len(ids) / n)
             batches = [ids[i:i+batch_size] for i in range(0, len(ids), batch_size)]
             matrix = {'include': [{'batch': i, 'codeunit_ids': ','.join(b)} for i, b in enumerate(batches)]}
-
         with open('matrix.json', 'w') as f:
             json.dump(matrix, f)
         print(f'Matrix: {len(matrix[\"include\"])} jobs')
-        " 2>&1
-
+        "
         echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
         echo "num-codeunits=$(echo "$CODEUNIT_IDS" | tr ',' '\n' | wc -l)" >> "$GITHUB_OUTPUT"
 
@@ -418,14 +386,9 @@ jobs:
         TOTAL=$(python3 -c "print(f'{$(date +%s.%N) - ${{ env.START_EPOCH }}:.3f}')")
         echo "=== Prepare Timing ==="
         echo "Setup (clone repos):    ${SETUP_DURATION:-n/a}s"
-        echo "Build image:            ${IMAGE_BUILD_DURATION:-n/a}s"
-        echo "BC+SQL startup:         ${CONTAINER_DURATION:-n/a}s"
+        echo "BC container start:     ${CONTAINER_DURATION:-n/a}s"
         echo "Prepare symbols:        ${PREPARE_DURATION:-n/a}s"
-        echo "Compile System App:     ${SYSAPP_COMPILE_DURATION:-n/a}s"
-        echo "Compile Test Library:   ${TESTLIB_COMPILE_DURATION:-n/a}s"
-        echo "Compile System App Test:${TEST_COMPILE_DURATION:-n/a}s"
         echo "Publish extensions:     ${PUBLISH_DURATION:-n/a}s"
-        echo "Initialize demo data:   ${DEMODATA_DURATION:-n/a}s"
         echo "Snapshot + push:        ${SNAPSHOT_DURATION:-n/a}s"
         echo "Total:                  ${TOTAL}s"
 
@@ -447,41 +410,35 @@ jobs:
 
     - name: Install podman and CRIU
       run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq podman
-        # CRIU is not in ubuntu-24.04 default repos — install from CRIU PPA
         sudo add-apt-repository -y ppa:criu/ppa
         sudo apt-get update -qq
-        sudo apt-get install -y -qq criu
-        criu --version && podman --version
+        sudo apt-get install -y -qq podman criu
 
-    - name: Pull checkpoint images
+    - name: Pull images
       run: |
         STEP_START=$(date +%s.%N)
         echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login ghcr.io -u ${{ github.actor }} --password-stdin
-        sudo podman pull ${{ needs.prepare.outputs.sql-image }} &
+        echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        # Pull both in parallel
         sudo podman pull ${{ needs.prepare.outputs.bc-checkpoint }} &
+        docker pull ${{ needs.prepare.outputs.sql-image }} &
         wait
         STEP_END=$(date +%s.%N)
         echo "PULL_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
-        echo "Pull took $(python3 -c "print(f'{$STEP_END - $STEP_START:.1f}')")s"
 
     - name: Start SQL and restore BC
       run: |
-        # Create pod
-        sudo podman pod create --name test-pod \
-          -p 7048:7048 -p 7049:7049 -p 7052:7052 -p 7085:7085 -p 1433:1433
-
-        # Start SQL from committed image
+        # Start SQL with docker (from committed image)
         echo "Starting SQL..."
-        sudo podman run -d --pod test-pod --name sql \
+        docker run -d --name sql \
           -e ACCEPT_EULA=Y \
           -e "MSSQL_SA_PASSWORD=Passw0rd123!" \
+          -p 1433:1433 \
           ${{ needs.prepare.outputs.sql-image }}
 
         echo "Waiting for SQL..."
         for i in $(seq 1 20); do
-          sudo podman exec sql /opt/mssql-tools18/bin/sqlcmd \
+          docker exec sql /opt/mssql-tools18/bin/sqlcmd \
             -S localhost -U sa -P "Passw0rd123!" -C -No -Q "SELECT 1" &>/dev/null \
             && echo "SQL ready after $((i*3))s" && break
           sleep 3
@@ -489,33 +446,26 @@ jobs:
 
         # Restore BC from CRIU checkpoint
         echo "Restoring BC from checkpoint..."
+        sudo mkdir -p /etc/criu
+        echo -e "tcp-established\nfile-locks" | sudo tee /etc/criu/runc.conf
+
         RESTORE_START=$(date +%s.%N)
         sudo podman container restore \
-          --pod test-pod \
           --tcp-established --file-locks \
           --print-stats \
           ${{ needs.prepare.outputs.bc-checkpoint }} 2>&1
         RESTORE_END=$(date +%s.%N)
         echo "RESTORE_DURATION=$(python3 -c "print(f'{$RESTORE_END - $RESTORE_START:.3f}')")" >> $GITHUB_ENV
-        echo "BC restore took $(python3 -c "print(f'{$RESTORE_END - $RESTORE_START:.1f}')")s"
 
-        # Verify BC responds
         echo "Verifying BC..."
         for i in $(seq 1 30); do
           HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
             http://localhost:7048/BC/ODataV4/Company 2>/dev/null || echo "000")
-          if [ "$HTTP" = "200" ]; then
-            echo "BC responding after $((i*2))s"
-            break
-          fi
+          [ "$HTTP" = "200" ] && echo "BC responding after $((i*2))s" && break
           sleep 2
         done
 
-        if [ "$HTTP" != "200" ]; then
-          echo "ERROR: BC not responding after restore"
-          sudo podman logs --tail 30 $(sudo podman ps -q --filter pod=test-pod --filter name=bc) 2>&1 || true
-          exit 1
-        fi
+        [ "$HTTP" != "200" ] && echo "ERROR: BC not responding" && exit 1
 
     - name: Clone bc-linux (for test runner)
       run: |
@@ -531,9 +481,7 @@ jobs:
 
     - name: Run test codeunits
       run: |
-        STEP_START=$(date +%s.%N)
         echo "Running codeunits: ${{ matrix.codeunit_ids }}"
-
         DISABLED_ARG=""
         [ -d "DisabledTests" ] && [ "$(ls DisabledTests/*.json 2>/dev/null | wc -l)" -gt 0 ] \
           && DISABLED_ARG="--disabled-tests DisabledTests"
@@ -544,9 +492,6 @@ jobs:
           $DISABLED_ARG \
           || true
 
-        STEP_END=$(date +%s.%N)
-        echo "RUN_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
-
     - name: Record test metrics
       if: always()
       run: |
@@ -554,33 +499,18 @@ jobs:
         echo "=== Test Runner ${{ matrix.batch }} ==="
         echo "Pull images:     ${PULL_DURATION:-n/a}s"
         echo "BC restore:      ${RESTORE_DURATION:-n/a}s"
-        echo "Run tests:       ${RUN_DURATION:-n/a}s"
         echo "Total:           ${TOTAL}s"
 
   # ============================================================
-  # COLLECT: Merge results from all test runners
+  # COLLECT: Summary
   # ============================================================
   collect:
     needs: [prepare, test]
     runs-on: ubuntu-latest
     if: always()
-
     steps:
     - name: Summary
       run: |
         echo "=== Parallel Test Execution Summary ==="
         echo "Codeunits: ${{ needs.prepare.outputs.num-codeunits }}"
         echo "Parallel jobs: $(echo '${{ needs.prepare.outputs.matrix }}' | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["include"]))')"
-        echo ""
-        echo "See individual test job logs for pass/fail details."
-        echo "Compare total wall-clock time against sequential baseline (~19 min)."
-
-    - name: Cleanup checkpoint images
-      if: always()
-      run: |
-        echo "Checkpoint images to clean up:"
-        echo "  ${{ needs.prepare.outputs.bc-checkpoint }}"
-        echo "  ${{ needs.prepare.outputs.sql-image }}"
-        echo ""
-        echo "To delete: gh api --method DELETE /user/packages/container/bc-parallel-bc/versions/..."
-        echo "(Manual cleanup for now — automated deletion can be added later)"
