@@ -133,21 +133,24 @@ jobs:
           -e BC_SKIP_APP_PUBLISH=true \
           bc-runner:local
 
-        echo "Waiting for BC to be healthy..."
-        for i in $(seq 1 120); do
+        echo "Waiting for BC to be healthy (artifacts download + DB restore + service start)..."
+        for i in $(seq 1 360); do
           STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
             http://localhost:7048/BC/ODataV4/Company 2>/dev/null || echo "000")
           if [ "$STATUS" = "200" ]; then
             echo "BC healthy after $((i*5))s"
             break
           fi
-          [ $((i % 12)) -eq 0 ] && echo "  $((i*5))s: waiting..."
+          if [ $((i % 12)) -eq 0 ]; then
+            LAST_LOG=$(sudo podman logs bc-pm 2>&1 | grep '\[entrypoint\]' | tail -1)
+            echo "  $((i*5))s: $LAST_LOG"
+          fi
           sleep 5
         done
 
         if [ "$STATUS" != "200" ]; then
-          echo "ERROR: BC did not become healthy"
-          sudo podman logs bc-pm 2>&1 | tail -50
+          echo "ERROR: BC did not become healthy within 30 minutes"
+          sudo podman logs bc-pm 2>&1 | tail -100
           exit 1
         fi
 

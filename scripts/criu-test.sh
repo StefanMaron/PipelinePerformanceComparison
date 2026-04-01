@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# criu-test.sh — Test CRIU checkpoint/restore with BC+SQL in a podman pod
+# criu-test.sh — Test CRIU checkpoint/restore: full vs lean (--ignore-rootfs)
 # Run with: sudo bash scripts/criu-test.sh
 set -uo pipefail
 
@@ -17,13 +17,12 @@ echo "=== Phase 1: Start BC+SQL in a podman pod ==="
 
 # Clean up any previous run
 podman pod rm -f bc-pod 2>/dev/null || true
-podman pod rm -f bc-pod-restored 2>/dev/null || true
+podman pod rm -f bc-pod-full 2>/dev/null || true
+podman pod rm -f bc-pod-lean 2>/dev/null || true
 
-# Create a pod (shared network namespace)
 podman pod create --name bc-pod \
   -p 7048:7048 -p 7049:7049 -p 7052:7052 -p 7085:7085 -p 1433:1433
 
-# Start SQL
 podman run -d --pod bc-pod --name sql-pm \
   -e ACCEPT_EULA=Y \
   -e "MSSQL_SA_PASSWORD=Passw0rd123!" \
@@ -39,7 +38,6 @@ for i in $(seq 1 24); do
   sleep 5
 done
 
-# Start BC (SQL reachable at localhost since they share the pod network)
 podman volume rm bc-pod-service 2>/dev/null || true
 podman run -d --pod bc-pod --name bc-pm \
   -v /var/lib/docker/volumes/bc-linux_bc-artifacts/_data:/bc/artifacts \
@@ -66,107 +64,138 @@ echo ""
 echo "=== Phase 2: Checkpoint BC + commit SQL ==="
 curl -sf -u admin:Admin123! http://localhost:7048/BC/ODataV4/Company | head -c 200
 echo ""
-echo "BC is alive."
+echo "BC is alive. Checkpointing..."
 
-# Checkpoint BC (CRIU — freezes running process)
-echo "Checkpointing BC..."
 TIME_START=$(date +%s%N)
 podman container checkpoint bc-pm \
   --tcp-established --file-locks \
   --create-image bc-checkpoint:latest \
   --print-stats 2>&1
-BC_CP_EXIT=$?
 TIME_END=$(date +%s%N)
-echo "BC checkpoint exit: $BC_CP_EXIT, took: $(( (TIME_END - TIME_START) / 1000000 ))ms"
+echo "Checkpoint took: $(( (TIME_END - TIME_START) / 1000000 ))ms"
 
-# Commit SQL (CRIU doesn't work with SQL Server — fsnotify issue)
-echo "Committing SQL..."
 podman commit sql-pm sql-committed:latest 2>&1
 echo "SQL committed."
-
 echo ""
-podman images | grep -E "checkpoint|committed"
-echo ""
+echo "Checkpoint image size: $(podman images bc-checkpoint:latest --format '{{.Size}}')"
 
 fi  # end of HAVE_CHECKPOINT=false block
 
-echo "=== Phase 3: Destroy and restore ==="
-podman pod rm -f bc-pod 2>/dev/null || true
-podman pod rm -f bc-pod-restored 2>/dev/null || true
-podman volume rm bc-pod-service 2>/dev/null || true
-echo "Pod destroyed. Restoring..."
+echo ""
+echo "=== Checkpoint image: $(podman images bc-checkpoint:latest --format '{{.Size}}') ==="
+echo ""
 
-# Create a new pod with the same ports
-podman pod create --name bc-pod-restored \
+# ============================================================
+# Test A: Restore FULL (normal, no --ignore-rootfs)
+# ============================================================
+echo "=== Test A: FULL restore ==="
+podman pod rm -f bc-pod 2>/dev/null || true
+podman pod rm -f bc-pod-full 2>/dev/null || true
+podman volume rm bc-pod-service 2>/dev/null || true
+
+podman pod create --name bc-pod-full \
   -p 7048:7048 -p 7049:7049 -p 7052:7052 -p 7085:7085 -p 1433:1433
 
-# Start SQL from committed image (normal start, ~10-20s)
-echo "Starting SQL from committed image..."
-TIME_START=$(date +%s%N)
-podman run -d --pod bc-pod-restored --name sql-restored \
-  -e ACCEPT_EULA=Y \
-  -e "MSSQL_SA_PASSWORD=Passw0rd123!" \
+podman run -d --pod bc-pod-full --name sql-full \
+  -e ACCEPT_EULA=Y -e "MSSQL_SA_PASSWORD=Passw0rd123!" \
   sql-committed:latest
-TIME_END=$(date +%s%N)
-echo "SQL container started in $(( (TIME_END - TIME_START) / 1000000 ))ms"
-
-# Wait for SQL to be ready
-echo "Waiting for SQL..."
 for i in $(seq 1 12); do
-  podman exec sql-restored /opt/mssql-tools18/bin/sqlcmd \
+  podman exec sql-full /opt/mssql-tools18/bin/sqlcmd \
     -S localhost -U sa -P "Passw0rd123!" -C -No -Q "SELECT 1" &>/dev/null \
     && echo "SQL ready after $((i*3))s" && break
   sleep 3
 done
 
-# Restore BC from CRIU checkpoint (the magic moment!)
-echo ""
-echo "Restoring BC from CRIU checkpoint..."
+echo "Restoring BC (FULL)..."
 TIME_START=$(date +%s%N)
 podman container restore \
-  --pod bc-pod-restored \
+  --pod bc-pod-full \
   --tcp-established --file-locks \
   --print-stats \
   localhost/bc-checkpoint:latest 2>&1
-BC_RESTORE_EXIT=$?
+FULL_EXIT=$?
 TIME_END=$(date +%s%N)
-RESTORE_MS=$(( (TIME_END - TIME_START) / 1000000 ))
-echo "BC restore exit: $BC_RESTORE_EXIT, took: ${RESTORE_MS}ms"
+FULL_MS=$(( (TIME_END - TIME_START) / 1000000 ))
 
-# Test if BC responds immediately
-echo ""
-echo "=== Phase 4: Verify BC responds ==="
-HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
+FULL_HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
   http://localhost:7048/BC/ODataV4/Company 2>/dev/null || echo "000")
-echo "OData response: HTTP $HTTP"
+echo "FULL: exit=$FULL_EXIT, restore=${FULL_MS}ms, HTTP=$FULL_HTTP"
 
-if [ "$HTTP" = "200" ]; then
-  echo ""
-  echo "========================================="
-  echo "  CRIU CHECKPOINT/RESTORE WORKS!"
-  echo "  BC restore time: ${RESTORE_MS}ms"
-  echo "========================================="
-else
-  echo "BC not responding immediately. Waiting..."
-  for i in $(seq 1 24); do
-    HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
+# Tear down
+podman pod rm -f bc-pod-full 2>/dev/null || true
+podman volume rm bc-pod-service 2>/dev/null || true
+
+# ============================================================
+# Test B: Restore LEAN (--ignore-rootfs on restore side)
+# ============================================================
+echo ""
+echo "=== Test B: LEAN restore (--ignore-rootfs) ==="
+
+podman pod create --name bc-pod-lean \
+  -p 7048:7048 -p 7049:7049 -p 7052:7052 -p 7085:7085 -p 1433:1433
+
+podman run -d --pod bc-pod-lean --name sql-lean \
+  -e ACCEPT_EULA=Y -e "MSSQL_SA_PASSWORD=Passw0rd123!" \
+  sql-committed:latest
+for i in $(seq 1 12); do
+  podman exec sql-lean /opt/mssql-tools18/bin/sqlcmd \
+    -S localhost -U sa -P "Passw0rd123!" -C -No -Q "SELECT 1" &>/dev/null \
+    && echo "SQL ready after $((i*3))s" && break
+  sleep 3
+done
+
+echo "Restoring BC (LEAN — --ignore-rootfs)..."
+TIME_START=$(date +%s%N)
+podman container restore \
+  --pod bc-pod-lean \
+  --tcp-established --file-locks \
+  --ignore-rootfs \
+  --print-stats \
+  localhost/bc-checkpoint:latest 2>&1
+LEAN_EXIT=$?
+TIME_END=$(date +%s%N)
+LEAN_MS=$(( (TIME_END - TIME_START) / 1000000 ))
+
+LEAN_HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
+  http://localhost:7048/BC/ODataV4/Company 2>/dev/null || echo "000")
+echo "LEAN: exit=$LEAN_EXIT, restore=${LEAN_MS}ms, HTTP=$LEAN_HTTP"
+
+if [ "$LEAN_HTTP" != "200" ]; then
+  echo "Waiting for BC to recover..."
+  for i in $(seq 1 15); do
+    LEAN_HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
       http://localhost:7048/BC/ODataV4/Company 2>/dev/null || echo "000")
-    if [ "$HTTP" = "200" ]; then
-      echo "BC responded after $((i*2))s (restore + TCP recovery)"
-      echo ""
-      echo "========================================="
-      echo "  CRIU WORKS (with $((i*2))s TCP recovery)"
-      echo "  BC restore time: ${RESTORE_MS}ms"
-      echo "========================================="
-      break
-    fi
+    [ "$LEAN_HTTP" = "200" ] && echo "BC responded after $((i*2))s" && break
     sleep 2
   done
 fi
 
+# ============================================================
+# Results
+# ============================================================
+echo ""
+echo "========================================="
+echo "  RESULTS"
+echo "========================================="
+echo "  Checkpoint image: $(podman images bc-checkpoint:latest --format '{{.Size}}')"
+echo ""
+echo "  FULL restore: ${FULL_MS}ms → HTTP $FULL_HTTP"
+echo "  LEAN restore: ${LEAN_MS}ms → HTTP $LEAN_HTTP"
+echo ""
+if [ "$LEAN_HTTP" = "200" ]; then
+  echo "  --ignore-rootfs WORKS on restore!"
+  echo "  This means we can push a smaller image"
+  echo "  (checkpoint without rootfs) to cut transfer time."
+else
+  echo "  --ignore-rootfs FAILED on restore."
+  echo "  Full checkpoint image ($(podman images bc-checkpoint:latest --format '{{.Size}}')) required."
+fi
+echo "========================================="
+
 echo ""
 echo "=== Cleanup ==="
-podman pod rm -f bc-pod-restored 2>/dev/null || true
+podman pod rm -f bc-pod-full 2>/dev/null || true
+podman pod rm -f bc-pod-lean 2>/dev/null || true
 podman pod rm -f bc-pod 2>/dev/null || true
 podman volume rm bc-pod-service 2>/dev/null || true
 podman rmi bc-checkpoint:latest sql-committed:latest 2>/dev/null || true
