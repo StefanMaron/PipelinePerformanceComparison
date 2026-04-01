@@ -391,6 +391,7 @@ jobs:
         docker run -d --name bc --network bc-net \
           -e SQL_SERVER=sql \
           -e SA_PASSWORD="Passw0rd123!" \
+          -e BC_CLEAR_ALL_APPS=false \
           -e BC_SKIP_APP_PUBLISH=true \
           -p 7048:7048 -p 7049:7049 -p 7052:7052 -p 7085:7085 \
           ${{ needs.prepare.outputs.bc-image }}
