@@ -468,6 +468,28 @@ jobs:
         path: DisabledTests
       continue-on-error: true
 
+    - name: Wait for BC APIs to be fully ready
+      run: |
+        # The OData health check passes before all extensions are compiled.
+        # Wait for the v2.0 companies API which requires extensions.
+        echo "Waiting for BC APIs (extension compilation)..."
+        for i in $(seq 1 60); do
+          COMPANY=$(curl -sf --max-time 5 -u admin:Admin123! \
+            "http://localhost:7048/BC/api/v2.0/companies" 2>/dev/null \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['name'])" 2>/dev/null || echo "")
+          if [ -n "$COMPANY" ]; then
+            echo "APIs ready after $((i*5))s (company: $COMPANY)"
+            break
+          fi
+          [ $((i % 6)) -eq 0 ] && echo "  $((i*5))s: waiting..."
+          sleep 5
+        done
+        if [ -z "$COMPANY" ]; then
+          echo "ERROR: BC APIs not ready after 5 minutes"
+          docker logs bc 2>&1 | tail -30
+          exit 1
+        fi
+
     - name: Run test codeunits
       run: |
         STEP_START=$(date +%s.%N)
