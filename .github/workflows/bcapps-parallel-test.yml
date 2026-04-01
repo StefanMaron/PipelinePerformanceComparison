@@ -98,7 +98,7 @@ jobs:
     - name: Build BC image with podman
       run: |
         STEP_START=$(date +%s.%N)
-        sudo podman build -t bc-runner:local bc-linux/src/ 2>&1 | tail -5
+        sudo podman build -t bc-runner:local -f bc-linux/src/Dockerfile bc-linux/ 2>&1 | tail -20
         STEP_END=$(date +%s.%N)
         echo "IMAGE_BUILD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
