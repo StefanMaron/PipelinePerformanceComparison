@@ -212,16 +212,22 @@ jobs:
 
         publish_app() {
           local FILE="$1" NAME="$2"
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 180 \
+          RESP=$(curl -s -w "\n%{http_code}" --max-time 180 \
             -u "$AUTH" -X POST \
             -F "file=@$FILE;type=application/octet-stream" "$DEV")
+          HTTP=$(echo "$RESP" | tail -1)
           echo "  $NAME: HTTP $HTTP"
-          [ "$HTTP" != "200" ] && echo "FATAL: Failed to publish $NAME" && exit 1
+          if [ "$HTTP" != "200" ]; then
+            echo "$RESP" | head -1 | python3 -c "import json,sys; print(json.load(sys.stdin).get('Message','')[:500])" 2>/dev/null || true
+            echo "FATAL: Failed to publish $NAME — aborting"
+            exit 1
+          fi
         }
 
         SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
         publish_app "$SYSAPP" "System Application"
 
+        echo "Publishing test framework apps..."
         find bc-artifacts -name "*.app" -type f \( \
             -name "Microsoft_Test Runner_*" -o \
             -name "Microsoft_Library Assert_*" -o \
@@ -229,9 +235,12 @@ jobs:
             -name "Microsoft_Permissions Mock_*" -o \
             -name "Microsoft_Any_*" \
         \) 2>/dev/null | sort | while read -r app; do
-          curl -s -o /dev/null -w "  $(basename "$app"): HTTP %{http_code}\n" --max-time 120 \
-            -u "$AUTH" -X POST -F "file=@$app;type=application/octet-stream" "$DEV" 2>/dev/null
-        done
+          NAME=$(basename "$app")
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
+            -u "$AUTH" -X POST \
+            -F "file=@$app;type=application/octet-stream" "$DEV" 2>/dev/null)
+          echo "  $NAME: HTTP $HTTP"
+        done || true
 
         publish_app "bc-linux/extensions/TestRunnerExtension/TestRunnerExtension.app" "TestRunnerExtension"
 
