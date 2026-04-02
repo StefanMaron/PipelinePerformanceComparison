@@ -291,24 +291,22 @@ jobs:
         SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
         publish_app "$SYSAPP" "System Application"
 
-        # Test framework apps
-        echo "Publishing test framework apps..."
-        find bc-artifacts -name "*.app" -type f \( \
-            -name "Microsoft_Test Runner_*" -o \
-            -name "Microsoft_Library Assert_*" -o \
-            -name "Microsoft_Library Variable Storage_*" -o \
-            -name "Microsoft_Permissions Mock_*" -o \
-            -name "Microsoft_Any_*" \
-        \) 2>/dev/null | sort | while read -r app; do
-          NAME=$(basename "$app")
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
-            -u "$AUTH" -X POST \
-            -F "file=@$app;type=application/octet-stream" "$DEV" 2>/dev/null)
-          echo "  $NAME: HTTP $HTTP"
-        done
+        # Test framework apps are already in DB (kept by selective clearing) — skip republishing.
+        echo "Test framework apps already in DB (selective clearing kept them)"
 
-        # TestRunnerExtension
-        publish_app "bc-linux/extensions/TestRunnerExtension/TestRunnerExtension.app" "TestRunnerExtension"
+        # TestRunnerExtension (depends on Test Runner which is already installed globally)
+        echo "  Publishing TestRunnerExtension..."
+        RESP=$(curl -s -w "\n%{http_code}" --max-time 180 \
+          -u "$AUTH" -X POST \
+          -F "file=@bc-linux/extensions/TestRunnerExtension/TestRunnerExtension.app;type=application/octet-stream" \
+          "http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=forcesync")
+        HTTP=$(echo "$RESP" | tail -1)
+        echo "  TestRunnerExtension: HTTP $HTTP"
+        if [ "$HTTP" != "200" ]; then
+          echo "$RESP" | head -1 | python3 -c "import json,sys; print(json.load(sys.stdin).get('Message','')[:500])" 2>/dev/null || true
+          echo "FATAL: Failed to publish TestRunnerExtension — aborting"
+          exit 1
+        fi
 
         # Test Library + Test app
         TESTLIB=$(find . -maxdepth 1 -name "*Test*Library*.app" | head -1)
