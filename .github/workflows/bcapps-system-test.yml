@@ -64,6 +64,14 @@ jobs:
         # The workflow only publishes System App + Test Library + Test App (custom-compiled).
         printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=selective\nBC_ARTIFACTS_DIR=$(cd .. && pwd)/bc-artifacts\nBC_RUNNER_IMAGE=ghcr.io/stefanmaron/bc-runner:latest\n" > .env
 
+        # Mount SQL data on tmpfs (RAM-backed) for faster DB I/O during tests
+        cat > docker-compose.override.yml << 'OVERRIDE'
+        services:
+          sql:
+            tmpfs:
+              - /var/opt/mssql/data:size=2g
+        OVERRIDE
+
         # Auth to ghcr.io for pulling pre-built image
         echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin 2>/dev/null
 
