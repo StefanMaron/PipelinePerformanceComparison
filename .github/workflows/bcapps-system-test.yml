@@ -54,7 +54,8 @@ jobs:
 
         # Clone bc-linux (MsDyn365Bc.On.Linux) — provides the container + test tools
         echo "Cloning MsDyn365Bc.On.Linux..."
-        git clone --depth 1 https://github.com/StefanMaron/MsDyn365Bc.On.Linux.git bc-linux
+        git clone --depth 1 \
+          https://github.com/StefanMaron/MsDyn365Bc.On.Linux.git bc-linux
 
         # Wait for BCApps clone
         wait $BCAPPS_PID
@@ -65,84 +66,30 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "SETUP_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
-    - name: Bump app versions to 27.6
-      run: |
-        # The container ships System Application 27.5.x with a high build number.
-        # Our compiled apps from BCApps source are 27.5.0.0 which BC refuses to
-        # synchronize (lower version). Bump only the app's own version, NOT
-        # dependency versions (those must match the 27.5 symbol packages).
-        echo "Patching app.json versions from 27.5 → 27.6..."
-        find bcapps-temp/src/System\ Application -name "app.json" | while read f; do
-          echo "  $f"
-          python3 -c "
-        import json, re
-        with open('$f', 'r') as fh:
-            data = json.loads(fh.read())
-        if 'version' in data:
-            old = data['version']
-            data['version'] = re.sub(r'^27\.5\.', '27.6.', old)
-            print(f'    version: {old} → {data[\"version\"]}')
-        with open('$f', 'w') as fh:
-            json.dump(data, fh, indent=2)
-            fh.write('\n')
-        "
-        done
-
-    - name: Start BC container
+    - name: Download BC artifacts on host
       run: |
         STEP_START=$(date +%s.%N)
-        cd bc-linux
-
-        # Container downloads artifacts itself using BC_VERSION/BC_COUNTRY/BC_TYPE
-        # BC_CLEAR_ALL_APPS: remove pre-installed AppSource apps that block System App publish
-        # BC_SKIP_APP_PUBLISH: workflow handles all extension publishing itself
-        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=true\nBC_SKIP_APP_PUBLISH=true\n" > .env
-
-        docker compose up -d --build 2>&1 | tail -10
-
-        echo "Waiting for BC to be healthy..."
-        for i in $(seq 1 360); do
-          STATUS=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q bc) 2>/dev/null || echo "unknown")
-          case "$STATUS" in
-            healthy)
-              echo "BC healthy after $((i*5))s"
-              break
-              ;;
-            unhealthy)
-              echo "ERROR: BC container unhealthy"
-              docker compose logs bc 2>&1 | tail -50
-              exit 1
-              ;;
-          esac
-          if ! docker compose ps bc 2>/dev/null | grep -q "Up"; then
-            echo "ERROR: BC container died"
-            docker compose logs bc 2>&1 | tail -50
-            exit 1
-          fi
-          [ $((i % 12)) -eq 0 ] && echo "  $((i*5))s: $(docker compose logs bc 2>&1 | grep '\[entrypoint\]' | tail -1)"
-          sleep 5
-        done
-
-        if [ "$STATUS" != "healthy" ]; then
-          echo "ERROR: BC did not become healthy within 30 minutes"
-          docker compose logs bc 2>&1 | tail -100
-          exit 1
-        fi
-
-        # Instance name is "BC" in bc-linux
-        echo "INSTANCE=BC" >> $GITHUB_ENV
-
-        # Extract artifacts from container volume for the compile step
-        BC_CONTAINER=$(docker compose ps -q bc)
-        cd ..
-        docker cp "$BC_CONTAINER:/bc/artifacts" bc-artifacts
-        echo "Artifacts extracted: $(du -sh bc-artifacts | cut -f1)"
+        echo "Downloading BC artifacts to host (before Docker)..."
+        chmod +x bc-linux/scripts/download-artifacts.sh
+        bc-linux/scripts/download-artifacts.sh sandbox ${{ env.BC_VERSION }} w1 bc-artifacts
+        echo "Artifacts: $(du -sh bc-artifacts | cut -f1)"
         STEP_END=$(date +%s.%N)
-        echo "CONTAINER_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+        echo "DOWNLOAD_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
-    - name: Prepare symbols and dependencies
+    - name: Compute dependency closure and prepare symbols
       run: |
         STEP_START=$(date +%s.%N)
+
+        # Compute which apps to keep: Application umbrella + transitive deps
+        APPLICATION_ID="c1335042-3002-4257-bf8a-75c898ccb1b8"
+        KEEP_IDS=$(python3 scripts/sort-apps-by-deps.py \
+          --keep-only "$APPLICATION_ID" --json \
+          --dir bc-artifacts/app/Extensions 2>/dev/null \
+          | python3 -c "import sys,json; ids=[json.loads(l)['id'] for l in sys.stdin]; print(','.join(ids))")
+        echo "BC_KEEP_APP_IDS=$KEEP_IDS" >> $GITHUB_ENV
+        echo "Keep app IDs: $KEEP_IDS"
+
+        # Prepare symbols and assembly probing (same as before, but from host artifacts)
         mkdir -p .alpackages mock-assemblies service-dlls
 
         # Copy all extension .app files as symbols
@@ -210,13 +157,52 @@ jobs:
         STEP_END=$(date +%s.%N)
         echo "PREPARE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
 
+    - name: Bump app versions to 27.6
+      run: |
+        echo "Patching app.json versions from 27.5 → 27.6..."
+        find bcapps-temp/src/System\ Application -name "app.json" | while read f; do
+          echo "  $f"
+          python3 -c "
+        import json, re
+        with open('$f', 'r') as fh:
+            data = json.loads(fh.read())
+        if 'version' in data:
+            old = data['version']
+            data['version'] = re.sub(r'^27\.5\.', '27.6.', old)
+            print(f'    version: {old} → {data[\"version\"]}')
+        with open('$f', 'w') as fh:
+            json.dump(data, fh, indent=2)
+            fh.write('\n')
+        "
+        done
+
+    - name: Start BC container (selective clearing)
+      run: |
+        STEP_START=$(date +%s.%N)
+        cd bc-linux
+
+        # Container uses host-downloaded artifacts via bind mount
+        # BC_CLEAR_ALL_APPS=selective: keep only dependency closure + test framework
+        # BC_SKIP_APP_PUBLISH=true: workflow handles all extension publishing
+        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=selective\nBC_SKIP_APP_PUBLISH=true\nBC_KEEP_APP_IDS=${{ env.BC_KEEP_APP_IDS }}\nBC_ARTIFACTS_DIR=$(cd .. && pwd)/bc-artifacts\n" > .env
+
+        docker compose up -d --build 2>&1 | tail -10
+
+        # Don't wait for healthy yet — start compiling in parallel
+        echo "BC container started, compiling AL apps in parallel..."
+        echo "INSTANCE=BC" >> $GITHUB_ENV
+        echo "CONTAINER_START=$(date +%s.%N)" >> $GITHUB_ENV
+
+        STEP_END=$(date +%s.%N)
+        echo "DOCKER_START_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
     - name: Compile System Application
       env:
         DOTNET_ReadyToRun: '0'
         COMPlus_ReadyToRun: '0'
       run: |
         STEP_START=$(date +%s.%N)
-        echo "Compiling System Application..."
+        echo "Compiling System Application (parallel with BC startup)..."
         AL compile \
           "/project:bcapps-temp/src/System Application/App" \
           "/packagecachepath:$(pwd)/.alpackages" \
@@ -265,6 +251,41 @@ jobs:
 
         STEP_END=$(date +%s.%N)
         echo "TEST_COMPILE_DURATION=$(python3 -c "print(f'{$STEP_END - $STEP_START:.3f}')")" >> $GITHUB_ENV
+
+    - name: Wait for BC healthy
+      run: |
+        echo "Waiting for BC to be healthy (compilation done, now blocking on container)..."
+        cd bc-linux
+        for i in $(seq 1 360); do
+          STATUS=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q bc) 2>/dev/null || echo "unknown")
+          case "$STATUS" in
+            healthy)
+              echo "BC healthy after $((i*5))s"
+              break
+              ;;
+            unhealthy)
+              echo "ERROR: BC container unhealthy"
+              docker compose logs bc 2>&1 | tail -50
+              exit 1
+              ;;
+          esac
+          if ! docker compose ps bc 2>/dev/null | grep -q "Up"; then
+            echo "ERROR: BC container died"
+            docker compose logs bc 2>&1 | tail -50
+            exit 1
+          fi
+          [ $((i % 12)) -eq 0 ] && echo "  $((i*5))s: $(docker compose logs bc 2>&1 | grep '\[entrypoint\]' | tail -1)"
+          sleep 5
+        done
+
+        if [ "$STATUS" != "healthy" ]; then
+          echo "ERROR: BC did not become healthy within 30 minutes"
+          docker compose logs bc 2>&1 | tail -100
+          exit 1
+        fi
+
+        CONTAINER_END=$(date +%s.%N)
+        echo "CONTAINER_DURATION=$(python3 -c "print(f'{$CONTAINER_END - ${{ env.CONTAINER_START }}:.3f}')")" >> $GITHUB_ENV
 
     - name: Publish extensions to BC
       run: |
@@ -364,11 +385,13 @@ jobs:
         TOTAL=$(python3 -c "print(f'{$(date +%s.%N) - ${{ env.START_EPOCH }}:.3f}')")
         echo "=== Pipeline Timing ==="
         echo "Setup (clone repos):    ${SETUP_DURATION:-n/a}s"
-        echo "BC container start:     ${CONTAINER_DURATION:-n/a}s"
+        echo "Download artifacts:     ${DOWNLOAD_DURATION:-n/a}s"
         echo "Prepare symbols:        ${PREPARE_DURATION:-n/a}s"
+        echo "Docker start:           ${DOCKER_START_DURATION:-n/a}s"
         echo "Compile System App:     ${SYSAPP_COMPILE_DURATION:-n/a}s"
         echo "Compile Test Library:   ${TESTLIB_COMPILE_DURATION:-n/a}s"
         echo "Compile System App Test:${TEST_COMPILE_DURATION:-n/a}s"
+        echo "BC container ready:     ${CONTAINER_DURATION:-n/a}s"
         echo "Publish extensions:     ${PUBLISH_DURATION:-n/a}s"
         echo "Initialize demo data:   ${DEMODATA_DURATION:-n/a}s"
         echo "Run tests:              ${TEST_DURATION:-n/a}s"
