@@ -59,10 +59,13 @@ jobs:
 
         # Selective clearing: keep only test framework apps (by name in entrypoint).
         # The dependency chain will be cleared — we publish our compiled System App later.
-        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=selective\nBC_SKIP_APP_PUBLISH=true\nBC_ARTIFACTS_DIR=$(cd .. && pwd)/bc-artifacts\n" > .env
+        # Use pre-built image from ghcr.io — skips the ~60s Docker build step.
+        # BC_SKIP_APP_PUBLISH is NOT set — let the entrypoint publish test framework after NST starts.
+        # The workflow only publishes System App + Test Library + Test App (custom-compiled).
+        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=selective\nBC_ARTIFACTS_DIR=$(cd .. && pwd)/bc-artifacts\nBC_RUNNER_IMAGE=ghcr.io/stefanmaron/bc-runner:latest\n" > .env
 
-        # Build image and start containers — don't wait for healthy
-        docker compose up -d --build 2>&1 | tail -5
+        docker compose pull bc 2>&1 | tail -3 || true
+        docker compose up -d 2>&1 | tail -5
         echo "INSTANCE=BC" >> $GITHUB_ENV
         echo "CONTAINER_START=$(date +%s.%N)" >> $GITHUB_ENV
 
@@ -291,22 +294,9 @@ jobs:
         SYSAPP=$(find . -maxdepth 1 -name "*System*Application*.app" ! -name "*Test*" | head -1)
         publish_app "$SYSAPP" "System Application"
 
-        # Test framework apps are already in DB (kept by selective clearing) — skip republishing.
-        echo "Test framework apps already in DB (selective clearing kept them)"
-
-        # TestRunnerExtension (depends on Test Runner which is already installed globally)
-        echo "  Publishing TestRunnerExtension..."
-        RESP=$(curl -s -w "\n%{http_code}" --max-time 180 \
-          -u "$AUTH" -X POST \
-          -F "file=@bc-linux/extensions/TestRunnerExtension/TestRunnerExtension.app;type=application/octet-stream" \
-          "http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=forcesync")
-        HTTP=$(echo "$RESP" | tail -1)
-        echo "  TestRunnerExtension: HTTP $HTTP"
-        if [ "$HTTP" != "200" ]; then
-          echo "$RESP" | head -1 | python3 -c "import json,sys; print(json.load(sys.stdin).get('Message','')[:500])" 2>/dev/null || true
-          echo "FATAL: Failed to publish TestRunnerExtension — aborting"
-          exit 1
-        fi
+        # Test framework + TestRunnerExtension are published by the entrypoint
+        # (BC_SKIP_APP_PUBLISH is not set, so entrypoint handles them after NST starts)
+        echo "Test framework published by entrypoint"
 
         # Test Library + Test app
         TESTLIB=$(find . -maxdepth 1 -name "*Test*Library*.app" | head -1)
