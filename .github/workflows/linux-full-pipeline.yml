@@ -185,7 +185,7 @@ jobs:
     - name: Publish extension to BC
       run: |
         DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=synchronize"
-        AUTH="admin:Admin123!"
+        AUTH="BCRUNNER:Admin123!"
 
         # Publish sample extension (includes test runner + test codeunits)
         APP_FILE=$(find . -maxdepth 1 -name "*.app" ! -name "TestRunner.app" | head -1)
@@ -208,7 +208,7 @@ jobs:
     - name: Run AL tests via OData
       run: |
         STEP_START=$(date +%s.%N)
-        AUTH="admin:Admin123!"
+        AUTH="BCRUNNER:Admin123!"
         ODATA="http://localhost:7048/$INSTANCE"
 
         # Get company ID

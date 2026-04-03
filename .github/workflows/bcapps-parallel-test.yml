@@ -195,7 +195,7 @@ jobs:
       run: |
         STEP_START=$(date +%s.%N)
         DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=forcesync"
-        AUTH="admin:Admin123!"
+        AUTH="BCRUNNER:Admin123!"
 
         publish_app() {
           local FILE="$1" NAME="$2"
@@ -431,7 +431,7 @@ jobs:
 
         echo "Waiting for BC..."
         for i in $(seq 1 120); do
-          HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u admin:Admin123! \
+          HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -u BCRUNNER:Admin123! \
             http://localhost:7048/BC/ODataV4/Company 2>/dev/null || echo "000")
           if [ "$HTTP" = "200" ]; then
             echo "BC healthy after $((i*5))s"
@@ -473,7 +473,7 @@ jobs:
         # Wait for the v2.0 companies API which requires extensions.
         echo "Waiting for BC APIs (extension compilation)..."
         for i in $(seq 1 60); do
-          COMPANY=$(curl -sf --max-time 5 -u admin:Admin123! \
+          COMPANY=$(curl -sf --max-time 5 -u BCRUNNER:Admin123! \
             "http://localhost:7048/BC/api/v2.0/companies" 2>/dev/null \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['name'])" 2>/dev/null || echo "")
           if [ -n "$COMPANY" ]; then

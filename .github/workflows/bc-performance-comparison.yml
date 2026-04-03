@@ -948,32 +948,32 @@ jobs:
       run: |
         APP_FILE=$(find . -maxdepth 1 -name "*.app" | head -1)
         curl -s -o /dev/null -w "Publish: HTTP %{http_code}\n" --max-time 30 \
-          -u "admin:Admin123!" -X POST \
+          -u "BCRUNNER:Admin123!" -X POST \
           -F "file=@$APP_FILE;type=application/octet-stream" \
           "http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=synchronize"
 
     - name: Run AL tests via OData
       run: |
         STEP_START=$(date +%s.%N)
-        COMPANY_ID=$(curl -s --max-time 10 -u "admin:Admin123!" \
+        COMPANY_ID=$(curl -s --max-time 10 -u "BCRUNNER:Admin123!" \
           "http://localhost:7048/$INSTANCE/ODataV4/Company" | \
           python3 -c "import sys,json; print(json.load(sys.stdin)['value'][0]['Id'])")
         API="http://localhost:7052/$INSTANCE/api/custom/automation/v1.0/companies($COMPANY_ID)"
 
-        RID=$(curl -s --max-time 10 -u "admin:Admin123!" -X POST \
+        RID=$(curl -s --max-time 10 -u "BCRUNNER:Admin123!" -X POST \
           -H "Content-Type: application/json" -d '{"CodeunitId": 50002}' \
           "$API/codeunitRunRequests" | python3 -c "import sys,json; print(json.load(sys.stdin)['Id'])")
 
-        curl -s --max-time 120 -u "admin:Admin123!" -X POST \
+        curl -s --max-time 120 -u "BCRUNNER:Admin123!" -X POST \
           -H "Content-Type: application/json" \
           "$API/codeunitRunRequests($RID)/Microsoft.NAV.runCodeunit" > /dev/null
 
-        STATUS=$(curl -s --max-time 10 -u "admin:Admin123!" \
+        STATUS=$(curl -s --max-time 10 -u "BCRUNNER:Admin123!" \
           "$API/codeunitRunRequests($RID)" | \
           python3 -c "import sys,json;d=json.load(sys.stdin);print(d['Status'])")
         echo "Test status: $STATUS"
 
-        curl -s --max-time 10 -u "admin:Admin123!" "$API/logEntries" | python3 -c "
+        curl -s --max-time 10 -u "BCRUNNER:Admin123!" "$API/logEntries" | python3 -c "
         import sys, json
         data = json.load(sys.stdin)
         p=f=0

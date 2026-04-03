@@ -281,7 +281,7 @@ jobs:
       run: |
         STEP_START=$(date +%s.%N)
         DEV="http://localhost:7049/$INSTANCE/dev/apps?SchemaUpdateMode=forcesync"
-        AUTH="admin:Admin123!"
+        AUTH="BCRUNNER:Admin123!"
 
         publish_app() {
           local FILE="$1" NAME="$2"
