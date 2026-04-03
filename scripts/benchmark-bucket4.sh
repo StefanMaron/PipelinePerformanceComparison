@@ -229,7 +229,7 @@ for entry in "${BUCKET4_APPS[@]}"; do
     EXEC_START=$(date +%s)
     MAX_ITER=$(( CU_COUNT * 3 + 20 ))
 
-    set +e  # Don't exit on test runner failure
+    # Run tests — capture output to file and stream to stdout
     dotnet run --project "$BC_LINUX_DIR/tools/TestRunner" -v q -- \
         --host "localhost:7085" \
         --odata-host "localhost:7052" \
@@ -240,35 +240,35 @@ for entry in "${BUCKET4_APPS[@]}"; do
         --num-codeunits "$CU_COUNT" \
         --timeout 120 \
         --codeunit-timeout 10 \
-        --max-iterations "$MAX_ITER" 2>&1 | tee "$RESULTS_DIR/${name}-results.txt"
-    RUNNER_EXIT=$?
-    set -o pipefail
+        --max-iterations "$MAX_ITER" > "$RESULTS_DIR/${name}-results.txt" 2>&1 || true
+    # Stream last few lines so user sees progress
+    tail -5 "$RESULTS_DIR/${name}-results.txt"
 
     EXEC_ELAPSED=$(elapsed_since $EXEC_START)
     APP_ELAPSED=$(elapsed_since $APP_START)
 
     # Count results from runner output
-    APP_PASS=$(grep -c '    PASS' "$RESULTS_DIR/${name}-results.txt" 2>/dev/null || echo 0)
-    APP_FAIL=$(grep -c '    FAIL' "$RESULTS_DIR/${name}-results.txt" 2>/dev/null || echo 0)
-    APP_SKIP=$(grep -c '    SKIP' "$RESULTS_DIR/${name}-results.txt" 2>/dev/null || echo 0)
+    APP_PASS=$(grep -c '    PASS' "$RESULTS_DIR/${name}-results.txt" || true)
+    APP_FAIL=$(grep -c '    FAIL' "$RESULTS_DIR/${name}-results.txt" || true)
+    APP_SKIP=$(grep -c '    SKIP' "$RESULTS_DIR/${name}-results.txt" || true)
     APP_TOTAL=$((APP_PASS + APP_FAIL + APP_SKIP))
     TOTAL_PASS=$((TOTAL_PASS + APP_PASS))
     TOTAL_FAIL=$((TOTAL_FAIL + APP_FAIL))
     TOTAL_SKIP=$((TOTAL_SKIP + APP_SKIP))
     TOTAL_METHODS=$((TOTAL_METHODS + APP_TOTAL))
 
-    if [ "$RUNNER_EXIT" -ne 0 ] && [ "$APP_PASS" -eq 0 ] && [ "$APP_FAIL" -eq 0 ]; then
-        log "  $name: CRASHED (exit $RUNNER_EXIT, ${APP_ELAPSED}s)"
-        # Check if BC is still alive, wait for recovery
+    log "  $name: ${APP_PASS}p/${APP_FAIL}f/${APP_SKIP}s (${APP_TOTAL} methods) — setup ${SETUP_ELAPSED}s + exec ${EXEC_ELAPSED}s = ${APP_ELAPSED}s total"
+
+    # Check if BC is still alive after test run
+    HEALTH=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER" 2>/dev/null || echo "dead")
+    if [ "$HEALTH" != "healthy" ]; then
+        log "  WARNING: BC not healthy ($HEALTH) — waiting for recovery..."
         for retry in $(seq 1 10); do
-            HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -u "$AUTH" \
-                "${API_BASE}/codeunitRunRequests" 2>/dev/null || echo "000")
-            [ "$HTTP" = "200" ] && break
-            log "  Waiting for BC recovery ($retry/10)..."
             sleep 10
+            HEALTH=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER" 2>/dev/null || echo "dead")
+            [ "$HEALTH" = "healthy" ] && break
+            log "  Recovery attempt $retry/10: $HEALTH"
         done
-    else
-        log "  $name: ${APP_PASS}p/${APP_FAIL}f/${APP_SKIP}s (${APP_TOTAL} methods) — setup ${SETUP_ELAPSED}s + exec ${EXEC_ELAPSED}s = ${APP_ELAPSED}s total"
     fi
 done
 
