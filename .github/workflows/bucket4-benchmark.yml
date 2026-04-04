@@ -1,0 +1,303 @@
+name: Bucket 4 Benchmark (Linux Headless)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bc_version:
+        description: 'BC version (e.g. 27.5.46862.48004)'
+        required: false
+        default: '27.5.46862.48004'
+        type: string
+      apply_sysctl:
+        description: 'Apply TuneD mssql sysctl tuning'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  BC_VERSION: ${{ inputs.bc_version || '27.5.46862.48004' }}
+  AUTH: 'BCRUNNER:Admin123!'
+
+jobs:
+  bucket4-benchmark:
+    runs-on: ubuntu-latest
+    name: Bucket 4 — Single Runner
+    timeout-minutes: 360
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Record start time
+      run: echo "START_EPOCH=$(date +%s)" >> $GITHUB_ENV
+
+    - name: Apply sysctl tuning (Linux-exclusive)
+      if: ${{ inputs.apply_sysctl != false }}
+      run: |
+        echo "=== Before ==="
+        sysctl vm.swappiness vm.dirty_ratio vm.dirty_background_ratio net.ipv4.tcp_low_latency
+        echo ""
+        sudo sysctl -w \
+          vm.swappiness=1 \
+          vm.dirty_background_ratio=3 \
+          vm.dirty_ratio=80 \
+          vm.dirty_expire_centisecs=500 \
+          vm.dirty_writeback_centisecs=100 \
+          vm.max_map_count=1600000 \
+          net.ipv4.tcp_low_latency=1
+        echo ""
+        echo "=== After ==="
+        sysctl vm.swappiness vm.dirty_ratio vm.dirty_background_ratio net.ipv4.tcp_low_latency
+
+    - name: Clone bc-linux
+      run: |
+        git clone --depth 1 \
+          https://github.com/StefanMaron/MsDyn365Bc.On.Linux.git bc-linux
+
+    - name: Download BC artifacts
+      run: |
+        STEP_START=$(date +%s)
+        chmod +x bc-linux/scripts/download-artifacts.sh
+        bc-linux/scripts/download-artifacts.sh sandbox ${{ env.BC_VERSION }} w1 bc-artifacts
+        echo "Artifacts: $(du -sh bc-artifacts | cut -f1)"
+        echo "DOWNLOAD_DURATION=$(( $(date +%s) - STEP_START ))" >> $GITHUB_ENV
+
+    - name: Start BC container
+      run: |
+        STEP_START=$(date +%s)
+        cd bc-linux
+
+        printf "BC_VERSION=${{ env.BC_VERSION }}\nSA_PASSWORD=Passw0rd123!\nBC_CLEAR_ALL_APPS=false\nBC_ARTIFACTS_DIR=$(cd .. && pwd)/bc-artifacts\nBC_RUNNER_IMAGE=ghcr.io/stefanmaron/bc-runner:latest\n" > .env
+
+        echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin 2>/dev/null
+
+        if ! docker compose pull bc 2>&1 | tail -3; then
+          echo "Pre-built image unavailable, building locally..."
+          docker compose build 2>&1 | tail -3
+        fi
+        docker compose up -d 2>&1 | tail -5
+        echo "CONTAINER_START=$(date +%s)" >> $GITHUB_ENV
+
+        echo "DOCKER_START_DURATION=$(( $(date +%s) - STEP_START ))" >> $GITHUB_ENV
+
+    - name: Wait for BC healthy
+      run: |
+        cd bc-linux
+        for i in $(seq 1 360); do
+          STATUS=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q bc) 2>/dev/null || echo "unknown")
+          case "$STATUS" in
+            healthy) echo "BC healthy after $((i*5))s"; break;;
+            unhealthy) echo "ERROR: BC unhealthy"; docker compose logs bc 2>&1 | tail -50; exit 1;;
+          esac
+          [ $((i % 12)) -eq 0 ] && echo "  $((i*5))s: $(docker compose logs bc 2>&1 | grep '\[entrypoint\]' | tail -1)"
+          sleep 5
+        done
+        [ "$STATUS" != "healthy" ] && echo "ERROR: timeout" && docker compose logs bc 2>&1 | tail -100 && exit 1
+        echo "CONTAINER_DURATION=$(( $(date +%s) - CONTAINER_START ))" >> $GITHUB_ENV
+
+    - name: Publish test dependencies
+      run: |
+        STEP_START=$(date +%s)
+        DEV="http://localhost:7049/apps?SchemaUpdateMode=forcesync"
+
+        publish_app() {
+          local CONTAINER_PATH="$1" NAME="$2"
+          HTTP=$(docker exec $(cd bc-linux && docker compose ps -q bc) \
+            curl -s -o /dev/null -w "%{http_code}" --max-time 600 \
+            -u "$AUTH" -X POST \
+            -F "file=@${CONTAINER_PATH};type=application/octet-stream" \
+            "$DEV" 2>/dev/null)
+          echo "  $NAME: HTTP $HTTP"
+          [ "$HTTP" != "200" ] && [ "$HTTP" != "422" ] && echo "FATAL: publish failed" && exit 1
+          return 0
+        }
+
+        APPS="/bc/artifacts/platform/Applications"
+        publish_app "$APPS/System Application/Test/Microsoft_System Application Test Library.app" "System Application Test Library"
+        publish_app "$APPS/BusinessFoundation/Test/Microsoft_Business Foundation Test Libraries.app" "Business Foundation Test Libraries"
+        publish_app "$APPS/BaseApp/Test/Microsoft_Tests-TestLibraries.app" "Tests-TestLibraries"
+
+        echo "PUBLISH_DEPS_DURATION=$(( $(date +%s) - STEP_START ))" >> $GITHUB_ENV
+
+    - name: Publish Bucket 4 test apps
+      run: |
+        STEP_START=$(date +%s)
+        DEV="http://localhost:7049/apps?SchemaUpdateMode=forcesync"
+        BC_CONTAINER=$(cd bc-linux && docker compose ps -q bc)
+        APPS="/bc/artifacts/platform/Applications"
+
+        for entry in \
+          "Tests-ERM:$APPS/BaseApp/Test/Microsoft_Tests-ERM.app" \
+          "Tests-SCM:$APPS/BaseApp/Test/Microsoft_Tests-SCM.app" \
+          "Tests-Misc:$APPS/BaseApp/Test/Microsoft_Tests-Misc.app" \
+          "Tests-Workflow:$APPS/BaseApp/Test/Microsoft_Tests-Workflow.app" \
+          "Tests-SCM-Service:$APPS/BaseApp/Test/Microsoft_Tests-SCM-Service.app" \
+          "Tests-SINGLESERVER:$APPS/BaseApp/Test/Microsoft_Tests-SINGLESERVER.app"; do
+          name="${entry%%:*}"
+          path="${entry#*:}"
+          START=$(date +%s)
+          HTTP=$(docker exec $BC_CONTAINER \
+            curl -s -o /dev/null -w "%{http_code}" --max-time 600 \
+            -u "$AUTH" -X POST \
+            -F "file=@${path};type=application/octet-stream" \
+            "$DEV" 2>/dev/null)
+          echo "  $name: HTTP $HTTP ($(( $(date +%s) - START ))s)"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "422" ]; then
+            echo "FATAL: Failed to publish $name"
+            exit 1
+          fi
+        done
+
+        echo "PUBLISH_APPS_DURATION=$(( $(date +%s) - STEP_START ))" >> $GITHUB_ENV
+
+    - name: Copy test apps to host
+      run: |
+        BC_CONTAINER=$(cd bc-linux && docker compose ps -q bc)
+        APPS="/bc/artifacts/platform/Applications/BaseApp/Test"
+        mkdir -p test-apps
+        for app in Tests-ERM Tests-SCM Tests-Misc Tests-Workflow Tests-SCM-Service Tests-SINGLESERVER; do
+          docker cp "$BC_CONTAINER:$APPS/Microsoft_${app}.app" "test-apps/${app}.app"
+          echo "  Copied $app ($(stat -c%s "test-apps/${app}.app" | numfmt --to=iec))"
+        done
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Run Bucket 4 tests
+      run: |
+        PHASE_START=$(date +%s)
+        TOTAL_PASS=0
+        TOTAL_FAIL=0
+        TOTAL_SKIP=0
+
+        for entry in \
+          "Tests-ERM" \
+          "Tests-SCM" \
+          "Tests-Misc" \
+          "Tests-Workflow" \
+          "Tests-SCM-Service" \
+          "Tests-SINGLESERVER"; do
+
+          echo ""
+          echo "============================================"
+          echo "=== $entry ==="
+          echo "============================================"
+          APP_START=$(date +%s)
+
+          chmod +x bc-linux/scripts/run-tests.sh
+          bc-linux/scripts/run-tests.sh \
+            --app "test-apps/${entry}.app" \
+            --timeout 120 \
+            || true
+
+          APP_ELAPSED=$(( $(date +%s) - APP_START ))
+
+          # Count from SQL (more reliable than parsing output)
+          SQLCMD="docker exec $(cd bc-linux && docker compose ps -q sql) /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P Passw0rd123! -C -No -d CRONUS"
+          SQL_RESULTS=$($SQLCMD -h -1 -W -Q "
+          SET NOCOUNT ON;
+          SELECT
+              SUM(CASE WHEN [Result]=2 THEN 1 ELSE 0 END),
+              SUM(CASE WHEN [Result]=1 THEN 1 ELSE 0 END),
+              SUM(CASE WHEN [Result]=0 THEN 1 ELSE 0 END),
+              COUNT(*)
+          FROM [CRONUS International Ltd_\$Test Method Line\$23de40a6-dfe8-4f80-80db-d70f83ce8caf]
+          WHERE [Test Suite]='DEFAULT' AND [Line Type]=1
+          " 2>/dev/null | head -1)
+          P=$(echo "$SQL_RESULTS" | awk '{print $1}')
+          F=$(echo "$SQL_RESULTS" | awk '{print $2}')
+          N=$(echo "$SQL_RESULTS" | awk '{print $3}')
+          T=$(echo "$SQL_RESULTS" | awk '{print $4}')
+
+          echo ""
+          echo "--- $entry: ${P}p/${F}f/${N}nr (${T} total) — ${APP_ELAPSED}s ---"
+          echo "${entry}_PASS=$P" >> $GITHUB_ENV
+          echo "${entry}_FAIL=$F" >> $GITHUB_ENV
+          echo "${entry}_DURATION=$APP_ELAPSED" >> $GITHUB_ENV
+
+          TOTAL_PASS=$((TOTAL_PASS + ${P:-0}))
+          TOTAL_FAIL=$((TOTAL_FAIL + ${F:-0}))
+
+          # Verify BC still alive
+          cd bc-linux
+          HEALTH=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q bc) 2>/dev/null || echo "dead")
+          cd ..
+          if [ "$HEALTH" != "healthy" ]; then
+            echo "WARNING: BC not healthy ($HEALTH) — waiting for recovery..."
+            for retry in $(seq 1 12); do
+              sleep 10
+              cd bc-linux
+              HEALTH=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q bc) 2>/dev/null || echo "dead")
+              cd ..
+              [ "$HEALTH" = "healthy" ] && break
+            done
+          fi
+        done
+
+        PHASE_ELAPSED=$(( $(date +%s) - PHASE_START ))
+        echo "TEST_EXECUTION_DURATION=$PHASE_ELAPSED" >> $GITHUB_ENV
+        echo "TOTAL_PASS=$TOTAL_PASS" >> $GITHUB_ENV
+        echo "TOTAL_FAIL=$TOTAL_FAIL" >> $GITHUB_ENV
+
+    - name: Benchmark Summary
+      if: always()
+      run: |
+        TOTAL_ELAPSED=$(( $(date +%s) - START_EPOCH ))
+
+        echo "============================================================"
+        echo "=== BUCKET 4 BENCHMARK SUMMARY ==="
+        echo "============================================================"
+        echo ""
+        echo "Pipeline Timing:"
+        echo "  Download artifacts:     ${DOWNLOAD_DURATION:-?}s"
+        echo "  Docker start:           ${DOCKER_START_DURATION:-?}s"
+        echo "  Container ready:        ${CONTAINER_DURATION:-?}s"
+        echo "  Publish dependencies:   ${PUBLISH_DEPS_DURATION:-?}s"
+        echo "  Publish test apps:      ${PUBLISH_APPS_DURATION:-?}s"
+        echo "  Test execution:         ${TEST_EXECUTION_DURATION:-?}s"
+        echo "  Total wall clock:       ${TOTAL_ELAPSED}s ($(( TOTAL_ELAPSED / 60 ))m)"
+        echo ""
+        echo "Per-App Timing:"
+        for app in Tests-ERM Tests-SCM Tests-Misc Tests-Workflow Tests-SCM-Service Tests-SINGLESERVER; do
+          # env var names use hyphens which bash doesn't like — use printenv
+          DUR=$(printenv "${app}_DURATION" 2>/dev/null || echo "?")
+          PASS=$(printenv "${app}_PASS" 2>/dev/null || echo "?")
+          FAIL=$(printenv "${app}_FAIL" 2>/dev/null || echo "?")
+          echo "  $app: ${PASS}p/${FAIL}f — ${DUR}s"
+        done
+        echo ""
+        echo "Totals:"
+        echo "  Passed:  ${TOTAL_PASS:-?}"
+        echo "  Failed:  ${TOTAL_FAIL:-?}"
+        echo ""
+        echo "Sysctl tuning: ${{ inputs.apply_sysctl && 'YES' || 'NO' }}"
+        echo "Microsoft reference: Bucket 4 ≈ 170 min (4 runners, Windows, AL-Go)"
+        echo "============================================================"
+
+    - name: Upload BC logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bc-logs
+        path: |
+          bc-linux/docker-compose.yml
+        retention-days: 7
+
+    - name: Capture BC logs
+      if: always()
+      run: |
+        cd bc-linux
+        docker compose logs bc > ../bc-log.txt 2>&1 || true
+        docker compose logs sql > ../sql-log.txt 2>&1 || true
+
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: container-logs
+        path: |
+          bc-log.txt
+          sql-log.txt
+        retention-days: 7
