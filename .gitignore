@@ -21,4 +21,4 @@ Thumbs.db
 
 # Temporary files
 temp*/
-*.tmp
+*.tmpbenchmark-results/
