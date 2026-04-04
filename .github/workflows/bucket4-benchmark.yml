@@ -99,20 +99,20 @@ jobs:
       run: |
         STEP_START=$(date +%s)
         DEV="http://localhost:7049/apps?SchemaUpdateMode=forcesync"
+        # Artifacts are on host at bc-artifacts/ (mounted into container)
+        APPS="bc-artifacts/platform/Applications"
 
         publish_app() {
-          local CONTAINER_PATH="$1" NAME="$2"
-          HTTP=$(docker exec $(cd bc-linux && docker compose ps -q bc) \
-            curl -s -o /dev/null -w "%{http_code}" --max-time 600 \
+          local FILE="$1" NAME="$2"
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 600 \
             -u "$AUTH" -X POST \
-            -F "file=@${CONTAINER_PATH};type=application/octet-stream" \
+            -F "file=@${FILE};type=application/octet-stream" \
             "$DEV" 2>/dev/null)
           echo "  $NAME: HTTP $HTTP"
           [ "$HTTP" != "200" ] && [ "$HTTP" != "422" ] && echo "FATAL: publish failed" && exit 1
           return 0
         }
 
-        APPS="/bc/artifacts/platform/Applications"
         publish_app "$APPS/System Application/Test/Microsoft_System Application Test Library.app" "System Application Test Library"
         publish_app "$APPS/BusinessFoundation/Test/Microsoft_Business Foundation Test Libraries.app" "Business Foundation Test Libraries"
         publish_app "$APPS/BaseApp/Test/Microsoft_Tests-TestLibraries.app" "Tests-TestLibraries"
@@ -123,8 +123,7 @@ jobs:
       run: |
         STEP_START=$(date +%s)
         DEV="http://localhost:7049/apps?SchemaUpdateMode=forcesync"
-        BC_CONTAINER=$(cd bc-linux && docker compose ps -q bc)
-        APPS="/bc/artifacts/platform/Applications"
+        APPS="bc-artifacts/platform/Applications"
 
         for entry in \
           "Tests-ERM:$APPS/BaseApp/Test/Microsoft_Tests-ERM.app" \
@@ -136,8 +135,7 @@ jobs:
           name="${entry%%:*}"
           path="${entry#*:}"
           START=$(date +%s)
-          HTTP=$(docker exec $BC_CONTAINER \
-            curl -s -o /dev/null -w "%{http_code}" --max-time 600 \
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 600 \
             -u "$AUTH" -X POST \
             -F "file=@${path};type=application/octet-stream" \
             "$DEV" 2>/dev/null)
@@ -150,14 +148,13 @@ jobs:
 
         echo "PUBLISH_APPS_DURATION=$(( $(date +%s) - STEP_START ))" >> $GITHUB_ENV
 
-    - name: Copy test apps to host
+    - name: Prepare test app paths
       run: |
-        BC_CONTAINER=$(cd bc-linux && docker compose ps -q bc)
-        APPS="/bc/artifacts/platform/Applications/BaseApp/Test"
+        APPS="bc-artifacts/platform/Applications/BaseApp/Test"
         mkdir -p test-apps
         for app in Tests-ERM Tests-SCM Tests-Misc Tests-Workflow Tests-SCM-Service Tests-SINGLESERVER; do
-          docker cp "$BC_CONTAINER:$APPS/Microsoft_${app}.app" "test-apps/${app}.app"
-          echo "  Copied $app ($(stat -c%s "test-apps/${app}.app" | numfmt --to=iec))"
+          ln -sf "$(pwd)/$APPS/Microsoft_${app}.app" "test-apps/${app}.app"
+          echo "  $app: $(ls -lh "test-apps/${app}.app" | awk '{print $5}')"
         done
 
     - name: Setup .NET SDK
