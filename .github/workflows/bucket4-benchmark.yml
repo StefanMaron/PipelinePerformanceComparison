@@ -100,7 +100,11 @@ jobs:
         STEP_START=$(date +%s)
         DEV="http://localhost:7049/apps?SchemaUpdateMode=forcesync"
         # Artifacts are on host at bc-artifacts/ (mounted into container)
-        APPS="bc-artifacts/platform/Applications"
+        # Directory may be "Applications" or "applications" depending on zip casing
+        APPS=$(find bc-artifacts/platform -maxdepth 1 -iname "applications" -type d | head -1)
+        echo "Applications dir: $APPS"
+        ls "$APPS/BaseApp/Test/"*.app 2>/dev/null | head -3
+        [ -z "$APPS" ] && echo "FATAL: Applications directory not found" && ls bc-artifacts/platform/ && exit 1
 
         publish_app() {
           local FILE="$1" NAME="$2"
@@ -123,7 +127,7 @@ jobs:
       run: |
         STEP_START=$(date +%s)
         DEV="http://localhost:7049/apps?SchemaUpdateMode=forcesync"
-        APPS="bc-artifacts/platform/Applications"
+        APPS=$(find bc-artifacts/platform -maxdepth 1 -iname "applications" -type d | head -1)
 
         for entry in \
           "Tests-ERM:$APPS/BaseApp/Test/Microsoft_Tests-ERM.app" \
@@ -150,7 +154,7 @@ jobs:
 
     - name: Prepare test app paths
       run: |
-        APPS="bc-artifacts/platform/Applications/BaseApp/Test"
+        APPS="$(find bc-artifacts/platform -maxdepth 1 -iname "applications" -type d | head -1)/BaseApp/Test"
         mkdir -p test-apps
         for app in Tests-ERM Tests-SCM Tests-Misc Tests-Workflow Tests-SCM-Service Tests-SINGLESERVER; do
           ln -sf "$(pwd)/$APPS/Microsoft_${app}.app" "test-apps/${app}.app"
